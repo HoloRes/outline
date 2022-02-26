@@ -9,6 +9,8 @@ import {
   useHistory,
   useRouteMatch,
 } from "react-router-dom";
+import styled from "styled-components";
+import breakpoint from "styled-components-breakpoint";
 import Collection from "~/models/Collection";
 import Search from "~/scenes/Search";
 import Badge from "~/components/Badge";
@@ -91,7 +93,10 @@ function CollectionScene() {
     load();
   }, [collections, isFetching, collection, error, id, can]);
 
-  useCommandBarActions([editCollection]);
+  useCommandBarActions(
+    [editCollection],
+    ui.activeCollectionId ? [ui.activeCollectionId] : undefined
+  );
 
   if (!collection && error) {
     return <Search notFound />;
@@ -107,8 +112,7 @@ function CollectionScene() {
       title={
         <>
           <CollectionIcon collection={collection} expanded />
-          &nbsp;
-          {collection.name}
+          &nbsp;{collection.name}
         </>
       }
       actions={<Actions collection={collection} />}
@@ -123,9 +127,9 @@ function CollectionScene() {
             <Empty collection={collection} />
           ) : (
             <>
-              <Heading>
-                <CollectionIcon collection={collection} size={40} expanded />{" "}
-                {collection.name}{" "}
+              <HeadingWithIcon>
+                <HeadingIcon collection={collection} size={40} expanded />
+                {collection.name}
                 {!collection.permission && (
                   <Tooltip
                     tooltip={t(
@@ -136,7 +140,7 @@ function CollectionScene() {
                     <Badge>{t("Private")}</Badge>
                   </Tooltip>
                 )}
-              </Heading>
+              </HeadingWithIcon>
               <CollectionDescription collection={collection} />
 
               <PinnedDocuments
@@ -242,5 +246,19 @@ function CollectionScene() {
     </CenteredContent>
   );
 }
+
+const HeadingWithIcon = styled(Heading)`
+  display: flex;
+  align-items: center;
+
+  ${breakpoint("tablet")`
+    margin-left: -40px;
+  `};
+`;
+
+const HeadingIcon = styled(CollectionIcon)`
+  align-self: flex-start;
+  flex-shrink: 0;
+`;
 
 export default observer(CollectionScene);
