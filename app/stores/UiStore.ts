@@ -40,7 +40,7 @@ class UiStore {
   observingUserId: string | undefined;
 
   @observable
-  showModKHint = false;
+  commandBarOpenedFromSidebar = false;
 
   @observable
   progressBarVisible = false;
@@ -124,7 +124,13 @@ class UiStore {
   };
 
   @action
-  setActiveDocument = (document: Document): void => {
+  setActiveDocument = (document: Document | string): void => {
+    if (typeof document === "string") {
+      this.activeDocumentId = document;
+      this.observingUserId = undefined;
+      return;
+    }
+
     this.activeDocumentId = document.id;
     this.observingUserId = undefined;
 
@@ -215,13 +221,13 @@ class UiStore {
   };
 
   @action
-  enableModKHint = () => {
-    this.showModKHint = true;
+  commandBarOpened = () => {
+    this.commandBarOpenedFromSidebar = true;
   };
 
   @action
-  disableModKHint = () => {
-    this.showModKHint = false;
+  commandBarClosed = () => {
+    this.commandBarOpenedFromSidebar = false;
   };
 
   @action

@@ -133,13 +133,15 @@ export const IconWrapper = styled.span`
 `;
 
 const Actions = styled(EventBoundary)<{ showActions?: boolean }>`
-  display: ${(props) => (props.showActions ? "inline-flex" : "none")};
+  display: inline-flex;
+  visibility: ${(props) => (props.showActions ? "visible" : "hidden")};
   position: absolute;
   top: 4px;
   right: 4px;
   gap: 4px;
   color: ${(props) => props.theme.textTertiary};
   transition: opacity 50ms;
+  height: 24px;
 
   svg {
     color: ${(props) => props.theme.textSecondary};
@@ -148,7 +150,7 @@ const Actions = styled(EventBoundary)<{ showActions?: boolean }>`
   }
 
   &:hover {
-    display: inline-flex;
+    visibility: visible;
 
     svg {
       opacity: 0.75;
@@ -189,15 +191,20 @@ const Link = styled(NavLink)<{ $isActiveDrop?: boolean; $isDraft?: boolean }>`
   }
 
   & + ${Actions} {
+    background: ${(props) => props.theme.sidebarBackground};
+
     ${NudeButton} {
-      background: ${(props) => props.theme.sidebarBackground};
+      background: transparent;
+
+      &:hover,
+      &[aria-expanded="true"] {
+        background: ${(props) => props.theme.sidebarControlHoverBackground};
+      }
     }
   }
 
   &[aria-current="page"] + ${Actions} {
-    ${NudeButton} {
-      background: ${(props) => props.theme.sidebarActiveBackground};
-    }
+    background: ${(props) => props.theme.sidebarActiveBackground};
   }
 
   ${breakpoint("tablet")`
@@ -207,7 +214,7 @@ const Link = styled(NavLink)<{ $isActiveDrop?: boolean; $isDraft?: boolean }>`
 
   @media (hover: hover) {
     &:hover + ${Actions}, &:active + ${Actions} {
-      display: inline-flex;
+      visibility: visible;
 
       svg {
         opacity: 0.75;
