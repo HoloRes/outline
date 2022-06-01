@@ -3,12 +3,10 @@ import * as React from "react";
 import { MenuItem as BaseMenuItem } from "reakit/Menu";
 import styled, { css } from "styled-components";
 import breakpoint from "styled-components-breakpoint";
-import { hover } from "~/styles";
 import MenuIconWrapper from "../MenuIconWrapper";
 
 type Props = {
-  onClick?: (arg0: React.SyntheticEvent) => void | Promise<void>;
-  children?: React.ReactNode;
+  onClick?: (event: React.SyntheticEvent) => void | Promise<void>;
   selected?: boolean;
   disabled?: boolean;
   dangerous?: boolean;
@@ -21,7 +19,7 @@ type Props = {
   icon?: React.ReactElement;
 };
 
-const MenuItem = ({
+const MenuItem: React.FC<Props> = ({
   onClick,
   children,
   selected,
@@ -30,7 +28,7 @@ const MenuItem = ({
   hide,
   icon,
   ...rest
-}: Props) => {
+}) => {
   const handleClick = React.useCallback(
     (ev) => {
       if (onClick) {
@@ -133,16 +131,18 @@ export const MenuAnchorCSS = css<MenuAnchorProps>`
       ? "pointer-events: none;"
       : `
 
-  &:${hover},
-  &:focus,
-  &.focus-visible {
-    color: ${props.theme.white};
-    background: ${props.dangerous ? props.theme.danger : props.theme.primary};
-    box-shadow: none;
-    cursor: pointer;
+  @media (hover: hover) {
+    &:hover,
+    &:focus,
+    &.focus-visible {
+      color: ${props.theme.white};
+      background: ${props.dangerous ? props.theme.danger : props.theme.primary};
+      box-shadow: none;
+      cursor: pointer;
 
-    svg {
-      fill: ${props.theme.white};
+      svg {
+        fill: ${props.theme.white};
+      }
     }
   }
   `};

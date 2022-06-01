@@ -3,6 +3,7 @@ import { TeamIcon } from "outline-icons";
 import { useRef, useState } from "react";
 import * as React from "react";
 import { useTranslation, Trans } from "react-i18next";
+import { getBaseDomain } from "@shared/utils/domains";
 import Button from "~/components/Button";
 import DefaultCollectionInputSelect from "~/components/DefaultCollectionInputSelect";
 import Heading from "~/components/Heading";
@@ -13,7 +14,9 @@ import env from "~/env";
 import useCurrentTeam from "~/hooks/useCurrentTeam";
 import useStores from "~/hooks/useStores";
 import useToasts from "~/hooks/useToasts";
+import isCloudHosted from "~/utils/isCloudHosted";
 import ImageInput from "./components/ImageInput";
+import SettingRow from "./components/SettingRow";
 
 function Details() {
   const { auth } = useStores();
@@ -89,60 +92,89 @@ function Details() {
     setDefaultCollectionId(defaultCollectionId);
   }, []);
 
-  const isValid = form.current && form.current.checkValidity();
+  const isValid = form.current?.checkValidity();
 
   return (
     <Scene title={t("Details")} icon={<TeamIcon color="currentColor" />}>
       <Heading>{t("Details")}</Heading>
       <Text type="secondary">
         <Trans>
-          These details affect the way that your Outline appears to everyone on
-          the team.
+          These settings affect the way that your knowledge base appears to
+          everyone on the team.
         </Trans>
       </Text>
 
-      <ImageInput
-        label={t("Logo")}
-        onSuccess={handleAvatarUpload}
-        onError={handleAvatarError}
-        src={avatarUrl}
-        borderRadius={0}
-      />
-
       <form onSubmit={handleSubmit} ref={form}>
-        <Input
+        <SettingRow
+          label={t("Logo")}
+          name="avatarUrl"
+          description={t(
+            "The logo is displayed at the top left of the application."
+          )}
+        >
+          <ImageInput
+            onSuccess={handleAvatarUpload}
+            onError={handleAvatarError}
+            src={avatarUrl}
+            borderRadius={0}
+          />
+        </SettingRow>
+        <SettingRow
           label={t("Name")}
           name="name"
-          autoComplete="organization"
-          value={name}
-          onChange={handleNameChange}
-          required
-          short
-        />
-        {env.SUBDOMAINS_ENABLED && (
-          <>
-            <Input
-              label={t("Subdomain")}
-              name="subdomain"
-              value={subdomain || ""}
-              onChange={handleSubdomainChange}
-              autoComplete="off"
-              minLength={4}
-              maxLength={32}
-              short
-            />
-            {subdomain && (
-              <Text type="secondary" size="small">
+          description={t(
+            "The team name, usually the same as your company name."
+          )}
+        >
+          <Input
+            id="name"
+            autoComplete="organization"
+            value={name}
+            onChange={handleNameChange}
+            required
+          />
+        </SettingRow>
+        <SettingRow
+          visible={env.SUBDOMAINS_ENABLED && isCloudHosted}
+          label={t("Subdomain")}
+          name="subdomain"
+          description={
+            subdomain ? (
+              <>
                 <Trans>Your knowledge base will be accessible at</Trans>{" "}
-                <strong>{subdomain}.getoutline.com</strong>
-              </Text>
-            )}
-          </>
-        )}
-        <DefaultCollectionInputSelect
-          onSelectCollection={onSelectCollection}
-          defaultCollectionId={defaultCollectionId}
-        />
+                <strong>
+                  {subdomain}.{getBaseDomain()}
+                </strong>
+              </>
+            ) : (
+              t("Choose a subdomain to enable a login page just for your team.")
+            )
+          }
+        >
+          <Input
+            id="subdomain"
+            value={subdomain || ""}
+            onChange={handleSubdomainChange}
+            autoComplete="off"
+            minLength={4}
+            maxLength={32}
+          />
+        </SettingRow>
+        <SettingRow
+          border={false}
+          label={t("Start view")}
+          name="defaultCollectionId"
+          description={t(
+            "This is the screen that team members will first see when they sign in."
+          )}
+        >
+          <DefaultCollectionInputSelect
+            id="defaultCollectionId"
+            onSelectCollection={onSelectCollection}
+            defaultCollectionId={defaultCollectionId}
+          />
+        </SettingRow>
+
         <Button type="submit" disabled={auth.isSaving || !isValid}>
           {auth.isSaving ? `${t("Saving")}…` : t("Save")}
         </Button>

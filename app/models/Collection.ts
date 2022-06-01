@@ -1,12 +1,16 @@
 import { trim } from "lodash";
 import { action, computed, observable } from "mobx";
-import BaseModel from "~/models/BaseModel";
+import { sortNavigationNodes } from "@shared/utils/collections";
+import CollectionsStore from "~/stores/CollectionsStore";
 import Document from "~/models/Document";
+import ParanoidModel from "~/models/ParanoidModel";
 import { NavigationNode } from "~/types";
 import { client } from "~/utils/ApiClient";
 import Field from "./decorators/Field";
 
-export default class Collection extends BaseModel {
+export default class Collection extends ParanoidModel {
+  store: CollectionsStore;
+
   @observable
   isSaving: boolean;
 
@@ -54,12 +58,6 @@ export default class Collection extends BaseModel {
 
   documents: NavigationNode[];
 
-  createdAt: string;
-
-  updatedAt: string;
-
-  deletedAt: string | null | undefined;
-
   url: string;
 
   urlId: string;
@@ -89,6 +87,18 @@ export default class Collection extends BaseModel {
   @computed
   get hasDescription(): boolean {
     return !!trim(this.description, "\\").trim();
+  }
+
+  @computed
+  get isStarred(): boolean {
+    return !!this.store.rootStore.stars.orderedData.find(
+      (star) => star.collectionId === this.id
+    );
+  }
+
+  @computed
+  get sortedDocuments() {
+    return sortNavigationNodes(this.documents, this.sort);
   }
 
   @action
@@ -126,7 +136,7 @@ export default class Collection extends BaseModel {
     };
 
     if (this.documents) {
-      travelNodes(this.documents);
+      travelNodes(this.sortedDocuments);
     }
 
     return result;
@@ -166,6 +176,16 @@ export default class Collection extends BaseModel {
 
     return path || [];
   }
+
+  @action
+  star = async () => {
+    return this.store.star(this);
+  };
+
+  @action
+  unstar = async () => {
+    return this.store.unstar(this);
+  };
 
   export = () => {
     return client.get("/collections.export", {

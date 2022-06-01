@@ -1,14 +1,15 @@
 import { subMinutes } from "date-fns";
 import Router from "koa-router";
 import { find } from "lodash";
-import { parseDomain, isCustomSubdomain } from "@shared/utils/domains";
+import { parseDomain } from "@shared/utils/domains";
+import SigninEmail from "@server/emails/templates/SigninEmail";
+import WelcomeEmail from "@server/emails/templates/WelcomeEmail";
+import env from "@server/env";
 import { AuthorizationError } from "@server/errors";
-import mailer from "@server/mailer";
 import errorHandling from "@server/middlewares/errorHandling";
 import methodOverride from "@server/middlewares/methodOverride";
 import { User, Team } from "@server/models";
 import { signIn } from "@server/utils/authentication";
-import { isCustomDomain } from "@server/utils/domains";
 import { getUserForEmailSigninToken } from "@server/utils/jwt";
 import { assertEmail, assertPresent } from "@server/validation";
 
@@ -32,25 +33,18 @@ router.post("email", errorHandling(), async (ctx) => {
 
   if (users.length) {
     let team!: Team | null;
+    const domain = parseDomain(ctx.request.hostname);
 
-    if (isCustomDomain(ctx.request.hostname)) {
+    if (domain.custom) {
       team = await Team.scope("withAuthenticationProviders").findOne({
         where: {
           domain: ctx.request.hostname,
         },
       });
-    }
-
-    if (
-      process.env.SUBDOMAINS_ENABLED === "true" &&
-      isCustomSubdomain(ctx.request.hostname) &&
-      !isCustomDomain(ctx.request.hostname)
-    ) {
-      const domain = parseDomain(ctx.request.hostname);
-      const subdomain = domain ? domain.subdomain : undefined;
+    } else if (env.SUBDOMAINS_ENABLED && domain.teamSubdomain) {
       team = await Team.scope("withAuthenticationProviders").findOne({
         where: {
-          subdomain,
+          subdomain: domain.teamSubdomain,
         },
       });
     }
@@ -92,7 +86,7 @@ router.post("email", errorHandling(), async (ctx) => {
       return;
     }
 
-    if (!team.guestSignin) {
+    if (!team.emailSigninEnabled) {
       throw AuthorizationError();
     }
 
@@ -110,7 +104,7 @@ router.post("email", errorHandling(), async (ctx) => {
     }
 
     // send email to users registered address with a short-lived token
-    await mailer.sendTemplate("signin", {
+    await SigninEmail.schedule({
       to: user.email,
       token: user.getEmailSigninToken(),
       teamUrl: team.url,
@@ -138,7 +132,7 @@ router.get("email.callback", async (ctx) => {
     return;
   }
 
-  if (!user.team.guestSignin) {
+  if (!user.team.emailSigninEnabled) {
     return ctx.redirect("/?notice=auth-error");
   }
 
@@ -147,7 +141,7 @@ router.get("email.callback", async (ctx) => {
   }
 
   if (user.isInvited) {
-    await mailer.sendTemplate("welcome", {
+    await WelcomeEmail.schedule({
       to: user.email,
       teamUrl: user.team.url,
     });
