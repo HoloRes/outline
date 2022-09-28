@@ -1,28 +1,28 @@
-import TestServer from "fetch-test-server";
 import { buildShare, buildDocument } from "@server/test/factories";
-import { flushdb } from "@server/test/support";
-import webService from "../services/web";
+import { getTestDatabase, getTestServer } from "@server/test/support";
 
-const app = webService();
-const server = new TestServer(app.callback());
-beforeEach(() => flushdb());
-afterAll(() => server.close());
+const db = getTestDatabase();
+const server = getTestServer();
 
-describe("/share/:id", () => {
-  it("should return standard title in html when loading share", async () => {
+afterAll(server.disconnect);
+
+beforeEach(db.flush);
+
+describe("/s/:id", () => {
+  it("should return standard title in html when loading unpublished share", async () => {
     const share = await buildShare({
       published: false,
     });
-    const res = await server.get(`/share/${share.id}`);
+    const res = await server.get(`/s/${share.id}`);
     const body = await res.text();
-    expect(res.status).toEqual(200);
+    expect(res.status).toEqual(404);
     expect(body).toContain("<title>Outline</title>");
   });
 
   it("should return standard title in html when share does not exist", async () => {
-    const res = await server.get(`/share/junk`);
+    const res = await server.get(`/s/junk`);
     const body = await res.text();
-    expect(res.status).toEqual(200);
+    expect(res.status).toEqual(404);
     expect(body).toContain("<title>Outline</title>");
   });
 
@@ -30,11 +30,12 @@ describe("/share/:id", () => {
     const document = await buildDocument();
     const share = await buildShare({
       documentId: document.id,
+      teamId: document.teamId,
     });
     await document.destroy();
-    const res = await server.get(`/share/${share.id}`);
+    const res = await server.get(`/s/${share.id}`);
     const body = await res.text();
-    expect(res.status).toEqual(200);
+    expect(res.status).toEqual(404);
     expect(body).toContain("<title>Outline</title>");
   });
 
@@ -42,8 +43,9 @@ describe("/share/:id", () => {
     const document = await buildDocument();
     const share = await buildShare({
       documentId: document.id,
+      teamId: document.teamId,
     });
-    const res = await server.get(`/share/${share.id}`);
+    const res = await server.get(`/s/${share.id}`);
     const body = await res.text();
     expect(res.status).toEqual(200);
     expect(body).toContain(`<title>${document.title}</title>`);
@@ -53,8 +55,9 @@ describe("/share/:id", () => {
     const document = await buildDocument();
     const share = await buildShare({
       documentId: document.id,
+      teamId: document.teamId,
     });
-    const res = await server.get(`/share/${share.id}/doc/test-Cl6g1AgPYn`);
+    const res = await server.get(`/s/${share.id}/doc/${document.urlId}`);
     const body = await res.text();
     expect(res.status).toEqual(200);
     expect(body).toContain(`<title>${document.title}</title>`);

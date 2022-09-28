@@ -1,27 +1,29 @@
-import TestServer from "fetch-test-server";
+import { CollectionPermission } from "@shared/types";
 import {
   Document,
   View,
-  Star,
   Revision,
   Backlink,
   CollectionUser,
   SearchQuery,
   Event,
 } from "@server/models";
-import webService from "@server/services/web";
+import DocumentHelper from "@server/models/helpers/DocumentHelper";
 import {
   buildShare,
   buildCollection,
   buildUser,
   buildDocument,
+  buildViewer,
 } from "@server/test/factories";
-import { flushdb, seed } from "@server/test/support";
+import { seed, getTestDatabase, getTestServer } from "@server/test/support";
 
-const app = webService();
-const server = new TestServer(app.callback());
-beforeEach(() => flushdb());
-afterAll(() => server.close());
+const db = getTestDatabase();
+const server = getTestServer();
+
+afterAll(server.disconnect);
+
+beforeEach(db.flush);
 
 describe("#documents.info", () => {
   it("should return published document", async () => {
@@ -101,8 +103,6 @@ describe("#documents.info", () => {
     expect(body.data.id).toEqual(document.id);
     expect(body.data.createdBy).toEqual(undefined);
     expect(body.data.updatedBy).toEqual(undefined);
-    await share.reload();
-    expect(share.lastAccessedAt).toBeTruthy();
   });
 
   it("should not return document of a deleted collection, when the user was absent in the collection", async () => {
@@ -191,8 +191,6 @@ describe("#documents.info", () => {
       expect(body.data.document.createdBy).toEqual(undefined);
       expect(body.data.document.updatedBy).toEqual(undefined);
       expect(body.data.sharedTree).toEqual(collection.documentStructure?.[0]);
-      await share.reload();
-      expect(share.lastAccessedAt).toBeTruthy();
     });
     it("should return sharedTree from shareId with id of nested document", async () => {
       const { document, user } = await seed();
@@ -214,8 +212,6 @@ describe("#documents.info", () => {
       expect(body.data.document.createdBy).toEqual(undefined);
       expect(body.data.document.updatedBy).toEqual(undefined);
       expect(body.data.sharedTree).toEqual(document.toJSON());
-      await share.reload();
-      expect(share.lastAccessedAt).toBeTruthy();
     });
     it("should not return sharedTree if child documents not shared", async () => {
       const { document, user } = await seed();
@@ -237,8 +233,6 @@ describe("#documents.info", () => {
       expect(body.data.document.createdBy).toEqual(undefined);
       expect(body.data.document.updatedBy).toEqual(undefined);
       expect(body.data.sharedTree).toEqual(undefined);
-      await share.reload();
-      expect(share.lastAccessedAt).toBeTruthy();
     });
     it("should not return details for nested documents", async () => {
       const { document, collection, user } = await seed();
@@ -469,7 +463,22 @@ describe("#documents.export", () => {
     });
     const body = await res.json();
     expect(res.status).toEqual(200);
-    expect(body.data).toEqual(document.toMarkdown());
+    expect(body.data).toEqual(DocumentHelper.toMarkdown(document));
+  });
+
+  it("should return document text with accept=text/markdown", async () => {
+    const { user, document } = await seed();
+    const res = await server.post("/api/documents.export", {
+      body: {
+        token: user.getJwtToken(),
+        id: document.id,
+      },
+      headers: {
+        accept: "text/markdown",
+      },
+    });
+    const body = await res.text();
+    expect(body).toEqual(DocumentHelper.toMarkdown(document));
   });
 
   it("should return archived document", async () => {
@@ -483,7 +492,7 @@ describe("#documents.export", () => {
     });
     const body = await res.json();
     expect(res.status).toEqual(200);
-    expect(body.data).toEqual(document.toMarkdown());
+    expect(body.data).toEqual(DocumentHelper.toMarkdown(document));
   });
 
   it("should not return published document in collection not a member of", async () => {
@@ -516,7 +525,7 @@ describe("#documents.export", () => {
     });
     const body = await res.json();
     expect(res.status).toEqual(200);
-    expect(body.data).toEqual(document.toMarkdown());
+    expect(body.data).toEqual(DocumentHelper.toMarkdown(document));
   });
 
   it("should return document from shareId without token", async () => {
@@ -533,7 +542,7 @@ describe("#documents.export", () => {
     });
     const body = await res.json();
     expect(res.status).toEqual(200);
-    expect(body.data).toEqual(document.toMarkdown());
+    expect(body.data).toEqual(DocumentHelper.toMarkdown(document));
   });
 
   it("should not return document from revoked shareId", async () => {
@@ -583,7 +592,7 @@ describe("#documents.export", () => {
     });
     const body = await res.json();
     expect(res.status).toEqual(200);
-    expect(body.data).toEqual(document.toMarkdown());
+    expect(body.data).toEqual(DocumentHelper.toMarkdown(document));
   });
 
   it("should return draft document from shareId with token", async () => {
@@ -603,7 +612,7 @@ describe("#documents.export", () => {
     });
     const body = await res.json();
     expect(res.status).toEqual(200);
-    expect(body.data).toEqual(document.toMarkdown());
+    expect(body.data).toEqual(DocumentHelper.toMarkdown(document));
   });
 
   it("should return document from shareId in collection not a member of", async () => {
@@ -623,7 +632,7 @@ describe("#documents.export", () => {
     });
     const body = await res.json();
     expect(res.status).toEqual(200);
-    expect(body.data).toEqual(document.toMarkdown());
+    expect(body.data).toEqual(DocumentHelper.toMarkdown(document));
   });
 
   it("should require authorization without token", async () => {
@@ -800,7 +809,7 @@ describe("#documents.list", () => {
       createdById: user.id,
       collectionId: collection.id,
       userId: user.id,
-      permission: "read",
+      permission: CollectionPermission.Read,
     });
     const res = await server.post("/api/documents.list", {
       body: {
@@ -1244,7 +1253,7 @@ describe("#documents.search", () => {
       createdById: user.id,
       collectionId: collection.id,
       userId: user.id,
-      permission: "read",
+      permission: CollectionPermission.Read,
     });
     const document = await buildDocument({
       title: "search term",
@@ -1432,8 +1441,72 @@ describe("#documents.archived", () => {
     expect(body.data.length).toEqual(0);
   });
 
+  it("should require member", async () => {
+    const viewer = await buildViewer();
+    const res = await server.post("/api/documents.archived", {
+      body: {
+        token: viewer.getJwtToken(),
+      },
+    });
+    expect(res.status).toEqual(403);
+  });
+
   it("should require authentication", async () => {
     const res = await server.post("/api/documents.archived");
+    expect(res.status).toEqual(401);
+  });
+});
+
+describe("#documents.deleted", () => {
+  it("should return deleted documents", async () => {
+    const { user } = await seed();
+    const document = await buildDocument({
+      userId: user.id,
+      teamId: user.teamId,
+    });
+    await document.delete(user.id);
+    const res = await server.post("/api/documents.deleted", {
+      body: {
+        token: user.getJwtToken(),
+      },
+    });
+    const body = await res.json();
+    expect(res.status).toEqual(200);
+    expect(body.data.length).toEqual(1);
+  });
+
+  it("should not return documents in private collections not a member of", async () => {
+    const { user } = await seed();
+    const collection = await buildCollection({
+      permission: null,
+    });
+    const document = await buildDocument({
+      teamId: user.teamId,
+      collectionId: collection.id,
+    });
+    await document.delete(user.id);
+    const res = await server.post("/api/documents.deleted", {
+      body: {
+        token: user.getJwtToken(),
+      },
+    });
+    const body = await res.json();
+    expect(res.status).toEqual(200);
+    expect(body.data.length).toEqual(0);
+  });
+
+  it("should require member", async () => {
+    const viewer = await buildViewer();
+    const res = await server.post("/api/documents.deleted", {
+      body: {
+        token: viewer.getJwtToken(),
+      },
+    });
+    expect(res.status).toEqual(403);
+  });
+
+  it("should require authentication", async () => {
+    const res = await server.post("/api/documents.deleted");
     expect(res.status).toEqual(401);
   });
 });
@@ -1754,79 +1827,6 @@ describe("#documents.restore", () => {
   });
 });
 
-describe("#documents.star", () => {
-  it("should star the document", async () => {
-    const { user, document } = await seed();
-    const res = await server.post("/api/documents.star", {
-      body: {
-        token: user.getJwtToken(),
-        id: document.id,
-      },
-    });
-    const stars = await Star.findAll();
-    expect(res.status).toEqual(200);
-    expect(stars.length).toEqual(1);
-    expect(stars[0].documentId).toEqual(document.id);
-  });
-
-  it("should require authentication", async () => {
-    const res = await server.post("/api/documents.star");
-    const body = await res.json();
-    expect(res.status).toEqual(401);
-    expect(body).toMatchSnapshot();
-  });
-
-  it("should require authorization", async () => {
-    const { document } = await seed();
-    const user = await buildUser();
-    const res = await server.post("/api/documents.star", {
-      body: {
-        token: user.getJwtToken(),
-        id: document.id,
-      },
-    });
-    expect(res.status).toEqual(403);
-  });
-});
-
-describe("#documents.unstar", () => {
-  it("should unstar the document", async () => {
-    const { user, document } = await seed();
-    await Star.create({
-      documentId: document.id,
-      userId: user.id,
-    });
-    const res = await server.post("/api/documents.unstar", {
-      body: {
-        token: user.getJwtToken(),
-        id: document.id,
-      },
-    });
-    const stars = await Star.findAll();
-    expect(res.status).toEqual(200);
-    expect(stars.length).toEqual(0);
-  });
-
-  it("should require authentication", async () => {
-    const res = await server.post("/api/documents.star");
-    const body = await res.json();
-    expect(res.status).toEqual(401);
-    expect(body).toMatchSnapshot();
-  });
-
-  it("should require authorization", async () => {
-    const { document } = await seed();
-    const user = await buildUser();
-    const res = await server.post("/api/documents.unstar", {
-      body: {
-        token: user.getJwtToken(),
-        id: document.id,
-      },
-    });
-    expect(res.status).toEqual(403);
-  });
-});
-
 describe("#documents.import", () => {
   it("should error if no file is passed", async () => {
     const user = await buildUser();
@@ -1881,6 +1881,25 @@ describe("#documents.create", () => {
       },
     });
     expect(res.status).toEqual(400);
+  });
+
+  // The length of UTF-8 "🛡" is 2 according to "🛡".length in node,
+  // so the length of the title totals to be 101.
+  // This test should not pass but does because length of the character
+  // calculated by lodash's size function is _.size('🛡') == 1.
+  // So the sentence's length comes out to be exactly 100.
+  it("should count variable length unicode character using lodash's size function", async () => {
+    const { user, collection } = await seed();
+    const res = await server.post("/api/documents.create", {
+      body: {
+        token: user.getJwtToken(),
+        collectionId: collection.id,
+        title:
+          "This text would be exactly 100 chars long if the following unicode character was counted as 1 char 🛡",
+        text: " ",
+      },
+    });
+    expect(res.status).toEqual(200);
   });
 
   it("should create as a child and add to collection if published", async () => {
@@ -1995,7 +2014,7 @@ describe("#documents.update", () => {
       createdById: user.id,
       collectionId: collection.id,
       userId: user.id,
-      permission: "read_write",
+      permission: CollectionPermission.ReadWrite,
     });
     const res = await server.post("/api/documents.update", {
       body: {
@@ -2084,7 +2103,7 @@ describe("#documents.update", () => {
       collectionId: collection.id,
       userId: admin.id,
       createdById: admin.id,
-      permission: "read_write",
+      permission: CollectionPermission.ReadWrite,
     });
     const res = await server.post("/api/documents.update", {
       body: {
@@ -2108,7 +2127,7 @@ describe("#documents.update", () => {
       collectionId: collection.id,
       userId: user.id,
       createdById: user.id,
-      permission: "read",
+      permission: CollectionPermission.Read,
     });
     const res = await server.post("/api/documents.update", {
       body: {
@@ -2123,7 +2142,7 @@ describe("#documents.update", () => {
 
   it("does not allow editing in read-only collection", async () => {
     const { user, document, collection } = await seed();
-    collection.permission = "read";
+    collection.permission = CollectionPermission.Read;
     await collection.save();
     const res = await server.post("/api/documents.update", {
       body: {
@@ -2296,7 +2315,6 @@ describe("#documents.delete", () => {
     const { user, document, collection } = await seed();
     // delete collection without hooks to trigger document deletion
     await collection.destroy({
-      // @ts-expect-error type is incorrect here
       hooks: false,
     });
     const res = await server.post("/api/documents.delete", {

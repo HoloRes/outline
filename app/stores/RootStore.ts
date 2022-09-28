@@ -18,10 +18,12 @@ import RevisionsStore from "./RevisionsStore";
 import SearchesStore from "./SearchesStore";
 import SharesStore from "./SharesStore";
 import StarsStore from "./StarsStore";
+import SubscriptionsStore from "./SubscriptionsStore";
 import ToastsStore from "./ToastsStore";
 import UiStore from "./UiStore";
 import UsersStore from "./UsersStore";
 import ViewsStore from "./ViewsStore";
+import WebhookSubscriptionsStore from "./WebhookSubscriptionStore";
 
 export default class RootStore {
   apiKeys: ApiKeysStore;
@@ -44,10 +46,12 @@ export default class RootStore {
   shares: SharesStore;
   ui: UiStore;
   stars: StarsStore;
+  subscriptions: SubscriptionsStore;
   users: UsersStore;
   views: ViewsStore;
   toasts: ToastsStore;
   fileOperations: FileOperationsStore;
+  webhookSubscriptions: WebhookSubscriptionsStore;
 
   constructor() {
     // PoliciesStore must be initialized before AuthStore
@@ -70,11 +74,13 @@ export default class RootStore {
     this.searches = new SearchesStore(this);
     this.shares = new SharesStore(this);
     this.stars = new StarsStore(this);
+    this.subscriptions = new SubscriptionsStore(this);
     this.ui = new UiStore();
     this.users = new UsersStore(this);
     this.views = new ViewsStore(this);
     this.fileOperations = new FileOperationsStore(this);
     this.toasts = new ToastsStore();
+    this.webhookSubscriptions = new WebhookSubscriptionsStore(this);
   }
 
   logout() {
@@ -96,9 +102,11 @@ export default class RootStore {
     this.searches.clear();
     this.shares.clear();
     this.stars.clear();
+    this.subscriptions.clear();
     this.fileOperations.clear();
     // this.ui omitted to keep ui settings between sessions
     this.users.clear();
     this.views.clear();
+    this.webhookSubscriptions.clear();
   }
 }

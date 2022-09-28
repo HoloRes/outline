@@ -1,10 +1,13 @@
 import fs from "fs-extra";
 import invariant from "invariant";
 import Router from "koa-router";
+import mime from "mime-types";
 import { Op, ScopeOptions, WhereOptions } from "sequelize";
 import { subtractDate } from "@shared/utils/date";
+import { bytesToHumanReadable } from "@shared/utils/files";
 import documentCreator from "@server/commands/documentCreator";
 import documentImporter from "@server/commands/documentImporter";
+import documentLoader from "@server/commands/documentLoader";
 import documentMover from "@server/commands/documentMover";
 import documentPermanentDeleter from "@server/commands/documentPermanentDeleter";
 import documentUpdater from "@server/commands/documentUpdater";
@@ -12,8 +15,8 @@ import { sequelize } from "@server/database/sequelize";
 import {
   NotFoundError,
   InvalidRequestError,
-  AuthorizationError,
   AuthenticationError,
+  ValidationError,
 } from "@server/errors";
 import auth from "@server/middlewares/authentication";
 import {
@@ -23,18 +26,17 @@ import {
   Event,
   Revision,
   SearchQuery,
-  Share,
-  Star,
   User,
   View,
-  Team,
 } from "@server/models";
-import { authorize, cannot, can } from "@server/policies";
+import DocumentHelper from "@server/models/helpers/DocumentHelper";
+import { authorize, cannot } from "@server/policies";
 import {
   presentCollection,
   presentDocument,
   presentPolicies,
 } from "@server/presenters";
+import slugify from "@server/utils/slugify";
 import {
   assertUuid,
   assertSort,
@@ -164,104 +166,117 @@ router.post("documents.list", auth(), pagination(), async (ctx) => {
   };
 });
 
-router.post("documents.archived", auth(), pagination(), async (ctx) => {
-  const { sort = "updatedAt" } = ctx.body;
+router.post(
+  "documents.archived",
+  auth({ member: true }),
+  pagination(),
+  async (ctx) => {
+    const { sort = "updatedAt" } = ctx.body;
 
-  assertSort(sort, Document);
-  let direction = ctx.body.direction;
-  if (direction !== "ASC") {
-    direction = "DESC";
+    assertSort(sort, Document);
+    let direction = ctx.body.direction;
+    if (direction !== "ASC") {
+      direction = "DESC";
+    }
+    const { user } = ctx.state;
+    const collectionIds = await user.collectionIds();
+    const collectionScope: Readonly<ScopeOptions> = {
+      method: ["withCollectionPermissions", user.id],
+    };
+    const viewScope: Readonly<ScopeOptions> = {
+      method: ["withViews", user.id],
+    };
+    const documents = await Document.scope([
+      "defaultScope",
+      collectionScope,
+      viewScope,
+    ]).findAll({
+      where: {
+        teamId: user.teamId,
+        collectionId: collectionIds,
+        archivedAt: {
+          [Op.ne]: null,
+        },
+      },
+      order: [[sort, direction]],
+      offset: ctx.state.pagination.offset,
+      limit: ctx.state.pagination.limit,
+    });
+    const data = await Promise.all(
+      documents.map((document) => presentDocument(document))
+    );
+    const policies = presentPolicies(user, documents);
+
+    ctx.body = {
+      pagination: ctx.state.pagination,
+      data,
+      policies,
+    };
   }
-  const { user } = ctx.state;
-  const collectionIds = await user.collectionIds();
-  const collectionScope: Readonly<ScopeOptions> = {
-    method: ["withCollectionPermissions", user.id],
-  };
-  const viewScope: Readonly<ScopeOptions> = {
-    method: ["withViews", user.id],
-  };
-  const documents = await Document.scope([
-    "defaultScope",
-    collectionScope,
-    viewScope,
-  ]).findAll({
-    where: {
-      teamId: user.teamId,
-      collectionId: collectionIds,
-      archivedAt: {
-        [Op.ne]: null,
+);
+
+router.post(
+  "documents.deleted",
+  auth({ member: true }),
+  pagination(),
+  async (ctx) => {
+    const { sort = "deletedAt" } = ctx.body;
+
+    assertSort(sort, Document);
+    let direction = ctx.body.direction;
+    if (direction !== "ASC") {
+      direction = "DESC";
+    }
+    const { user } = ctx.state;
+    const collectionIds = await user.collectionIds({
+      paranoid: false,
+    });
+    const collectionScope: Readonly<ScopeOptions> = {
+      method: ["withCollectionPermissions", user.id],
+    };
+    const viewScope: Readonly<ScopeOptions> = {
+      method: ["withViews", user.id],
+    };
+    const documents = await Document.scope([
+      collectionScope,
+      viewScope,
+    ]).findAll({
+      where: {
+        teamId: user.teamId,
+        collectionId: collectionIds,
+        deletedAt: {
+          [Op.ne]: null,
+        },
       },
-    },
-    order: [[sort, direction]],
-    offset: ctx.state.pagination.offset,
-    limit: ctx.state.pagination.limit,
-  });
-  const data = await Promise.all(
-    documents.map((document) => presentDocument(document))
-  );
-  const policies = presentPolicies(user, documents);
+      include: [
+        {
+          model: User,
+          as: "createdBy",
+          paranoid: false,
+        },
+        {
+          model: User,
+          as: "updatedBy",
+          paranoid: false,
+        },
+      ],
+      paranoid: false,
+      order: [[sort, direction]],
+      offset: ctx.state.pagination.offset,
+      limit: ctx.state.pagination.limit,
+    });
+    const data = await Promise.all(
+      documents.map((document) => presentDocument(document))
+    );
+    const policies = presentPolicies(user, documents);
 
-  ctx.body = {
-    pagination: ctx.state.pagination,
-    data,
-    policies,
-  };
-});
-
-router.post("documents.deleted", auth(), pagination(), async (ctx) => {
-  const { sort = "deletedAt" } = ctx.body;
-
-  assertSort(sort, Document);
-  let direction = ctx.body.direction;
-  if (direction !== "ASC") {
-    direction = "DESC";
+    ctx.body = {
+      pagination: ctx.state.pagination,
+      data,
+      policies,
+    };
   }
-  const { user } = ctx.state;
-  const collectionIds = await user.collectionIds({
-    paranoid: false,
-  });
-  const collectionScope: Readonly<ScopeOptions> = {
-    method: ["withCollectionPermissions", user.id],
-  };
-  const viewScope: Readonly<ScopeOptions> = {
-    method: ["withViews", user.id],
-  };
-  const documents = await Document.scope([collectionScope, viewScope]).findAll({
-    where: {
-      teamId: user.teamId,
-      collectionId: collectionIds,
-      deletedAt: {
-        [Op.ne]: null,
-      },
-    },
-    include: [
-      {
-        model: User,
-        as: "createdBy",
-        paranoid: false,
-      },
-      {
-        model: User,
-        as: "updatedBy",
-        paranoid: false,
-      },
-    ],
-    paranoid: false,
-    order: [[sort, direction]],
-    offset: ctx.state.pagination.offset,
-    limit: ctx.state.pagination.limit,
-  });
-  const data = await Promise.all(
-    documents.map((document) => presentDocument(document))
-  );
-  const policies = presentPolicies(user, documents);
-
-  ctx.body = {
-    pagination: ctx.state.pagination,
-    data,
-    policies,
-  };
-});
+);
 
 router.post("documents.viewed", auth(), pagination(), async (ctx) => {
   let { direction } = ctx.body;
@@ -382,185 +397,16 @@ router.post("documents.drafts", auth(), pagination(), async (ctx) => {
   };
 });
 
-async function loadDocument({
-  id,
-  shareId,
-  user,
-}: {
-  id?: string;
-  shareId?: string;
-  user?: User;
-}): Promise<{
-  document: Document;
-  share?: Share;
-  collection: Collection;
-}> {
-  let document;
-  let collection;
-  let share;
-
-  if (!shareId && !(id && user)) {
-    throw AuthenticationError(`Authentication or shareId required`);
-  }
-
-  if (shareId) {
-    share = await Share.findOne({
-      where: {
-        revokedAt: {
-          [Op.is]: null,
-        },
-        id: shareId,
-      },
-      include: [
-        {
-          // unscoping here allows us to return unpublished documents
-          model: Document.unscoped(),
-          include: [
-            {
-              model: User,
-              as: "createdBy",
-              paranoid: false,
-            },
-            {
-              model: User,
-              as: "updatedBy",
-              paranoid: false,
-            },
-          ],
-          required: true,
-          as: "document",
-        },
-      ],
-    });
-
-    if (!share || share.document.archivedAt) {
-      throw InvalidRequestError("Document could not be found for shareId");
-    }
-
-    // It is possible to pass both an id and a shareId to the documents.info
-    // endpoint. In this case we'll load the document based on the `id` and check
-    // if the provided share token allows access. This is used by the frontend
-    // to navigate nested documents from a single share link.
-    if (id) {
-      document = await Document.findByPk(id, {
-        userId: user ? user.id : undefined,
-        paranoid: false,
-      }); // otherwise, if the user has an authenticated session make sure to load
-      // with their details so that we can return the correct policies, they may
-      // be able to edit the shared document
-    } else if (user) {
-      document = await Document.findByPk(share.documentId, {
-        userId: user.id,
-        paranoid: false,
-      });
-    } else {
-      document = share.document;
-    }
-
-    invariant(document, "document not found");
-
-    // If the user has access to read the document, we can just update
-    // the last access date and return the document without additional checks.
-    const canReadDocument = user && can(user, "read", document);
-
-    if (canReadDocument) {
-      await share.update({
-        lastAccessedAt: new Date(),
-      });
-
-      // Cannot use document.collection here as it does not include the
-      // documentStructure by default through the relationship.
-      collection = await Collection.findByPk(document.collectionId);
-      invariant(collection, "collection not found");
-
-      return {
-        document,
-        share,
-        collection,
-      };
-    }
-
-    // "published" === on the public internet.
-    // We already know that there's either no logged in user or the user doesn't
-    // have permission to read the document, so we can throw an error.
-    if (!share.published) {
-      throw AuthorizationError();
-    }
-
-    // It is possible to disable sharing at the collection so we must check
-    collection = await Collection.findByPk(document.collectionId);
-    invariant(collection, "collection not found");
-
-    if (!collection.sharing) {
-      throw AuthorizationError();
-    }
-
-    // If we're attempting to load a document that isn't the document originally
-    // shared then includeChildDocuments must be enabled and the document must
-    // still be active and nested within the shared document
-    if (share.document.id !== document.id) {
-      if (!share.includeChildDocuments) {
-        throw AuthorizationError();
-      }
-
-      const childDocumentIds = await share.document.getChildDocumentIds({
-        archivedAt: {
-          [Op.is]: null,
-        },
-      });
-      if (!childDocumentIds.includes(document.id)) {
-        throw AuthorizationError();
-      }
-    }
-
-    // It is possible to disable sharing at the team level so we must check
-    const team = await Team.findByPk(document.teamId);
-    invariant(team, "team not found");
-
-    if (!team.sharing) {
-      throw AuthorizationError();
-    }
-
-    await share.update({
-      lastAccessedAt: new Date(),
-    });
-  } else {
-    document = await Document.findByPk(id as string, {
-      userId: user ? user.id : undefined,
-      paranoid: false,
-    });
-
-    if (!document) {
-      throw NotFoundError();
-    }
-
-    if (document.deletedAt) {
-      // don't send data if user cannot restore deleted doc
-      user && authorize(user, "restore", document);
-    } else {
-      user && authorize(user, "read", document);
-    }
-
-    collection = document.collection;
-  }
-
-  return {
-    document,
-    share,
-    collection,
-  };
-}
-
 router.post(
   "documents.info",
   auth({
-    required: false,
+    optional: true,
   }),
   async (ctx) => {
     const { id, shareId, apiVersion } = ctx.body;
     assertPresent(id || shareId, "id or shareId is required");
     const { user } = ctx.state;
-    const { document, share, collection } = await loadDocument({
+    const { document, share, collection } = await documentLoader({
       id,
       shareId,
       user,
@@ -592,24 +438,56 @@ router.post(
 router.post(
   "documents.export",
   auth({
-    required: false,
+    optional: true,
   }),
   async (ctx) => {
     const { id, shareId } = ctx.body;
     assertPresent(id || shareId, "id or shareId is required");
+
     const { user } = ctx.state;
-    const { document } = await loadDocument({
+    const accept = ctx.request.headers["accept"];
+
+    const { document } = await documentLoader({
       id,
       shareId,
       user,
+      // We need the collaborative state to generate HTML.
+      includeState: accept === "text/html",
     });
+
+    let contentType;
+    let content;
+
+    if (accept?.includes("text/html")) {
+      contentType = "text/html";
+      content = DocumentHelper.toHTML(document);
+    } else if (accept?.includes("text/markdown")) {
+      contentType = "text/markdown";
+      content = DocumentHelper.toMarkdown(document);
+    } else {
+      contentType = "application/json";
+      content = DocumentHelper.toMarkdown(document);
+    }
+
+    if (contentType !== "application/json") {
+      ctx.set("Content-Type", contentType);
+      ctx.set(
+        "Content-Disposition",
+        `attachment; filename="${slugify(
+          document.titleWithDefault
+        )}.${mime.extension(contentType)}"`
+      );
+      ctx.body = content;
+      return;
+    }
+
     ctx.body = {
-      data: document.toMarkdown(),
+      data: content,
     };
   }
 );
 
-router.post("documents.restore", auth(), async (ctx) => {
+router.post("documents.restore", auth({ member: true }), async (ctx) => {
   const { id, collectionId, revisionId } = ctx.body;
   assertPresent(id, "id is required");
   const { user } = ctx.state;
@@ -637,8 +515,10 @@ router.post("documents.restore", auth(), async (ctx) => {
   // be caught as a 403 on the authorize call below. Otherwise we're checking here
   // that the original collection still exists and advising to pass collectionId
   // if not.
-  if (!collectionId) {
-    assertPresent(collection, "collectionId is required");
+  if (!collectionId && !collection) {
+    throw ValidationError(
+      "Unable to restore to original collection, it may have been deleted"
+    );
   }
 
   authorize(user, "update", collection);
@@ -759,7 +639,7 @@ router.post("documents.search_titles", auth(), pagination(), async (ctx) => {
 router.post(
   "documents.search",
   auth({
-    required: false,
+    optional: true,
   }),
   pagination(),
   async (ctx) => {
@@ -786,7 +666,7 @@ router.post(
     let response;
 
     if (shareId) {
-      const { share, document } = await loadDocument({
+      const { share, document } = await documentLoader({
         shareId,
         user,
       });
@@ -796,7 +676,7 @@ router.post(
       }
 
       teamId = share.teamId;
-      const team = await Team.findByPk(teamId);
+      const team = await share.$get("team");
       invariant(team, "Share must belong to a team");
 
       response = await Document.searchForTeam(team, query, {
@@ -884,76 +764,7 @@ router.post(
   }
 );
 
-// Deprecated – use stars.create instead
-router.post("documents.star", auth(), async (ctx) => {
-  const { id } = ctx.body;
-  assertPresent(id, "id is required");
-  const { user } = ctx.state;
-
-  const document = await Document.findByPk(id, {
-    userId: user.id,
-  });
-  authorize(user, "read", document);
-
-  await Star.findOrCreate({
-    where: {
-      documentId: document.id,
-      userId: user.id,
-    },
-  });
-
-  await Event.create({
-    name: "documents.star",
-    documentId: document.id,
-    collectionId: document.collectionId,
-    teamId: document.teamId,
-    actorId: user.id,
-    data: {
-      title: document.title,
-    },
-    ip: ctx.request.ip,
-  });
-
-  ctx.body = {
-    success: true,
-  };
-});
-
-// Deprecated – use stars.delete instead
-router.post("documents.unstar", auth(), async (ctx) => {
-  const { id } = ctx.body;
-  assertPresent(id, "id is required");
-  const { user } = ctx.state;
-
-  const document = await Document.findByPk(id, {
-    userId: user.id,
-  });
-  authorize(user, "read", document);
-
-  await Star.destroy({
-    where: {
-      documentId: document.id,
-      userId: user.id,
-    },
-  });
-  await Event.create({
-    name: "documents.unstar",
-    documentId: document.id,
-    collectionId: document.collectionId,
-    teamId: document.teamId,
-    actorId: user.id,
-    data: {
-      title: document.title,
-    },
-    ip: ctx.request.ip,
-  });
-
-  ctx.body = {
-    success: true,
-  };
-});
-
-router.post("documents.templatize", auth(), async (ctx) => {
+router.post("documents.templatize", auth({ member: true }), async (ctx) => {
   const { id } = ctx.body;
   assertPresent(id, "id is required");
   const { user } = ctx.state;
@@ -1023,6 +834,7 @@ router.post("documents.update", auth(), async (ctx) => {
   const document = await sequelize.transaction(async (transaction) => {
     const document = await Document.findByPk(id, {
       userId: user.id,
+      includeState: true,
       transaction,
     });
     authorize(user, "update", document);
@@ -1256,12 +1068,19 @@ router.post("documents.import", auth(), async (ctx) => {
     throw InvalidRequestError("Request type must be multipart/form-data");
   }
 
-  // @ts-expect-error ts-migrate(2769) FIXME: No overload matches this call.
-  const file: any = Object.values(ctx.request.files)[0];
-  assertPresent(file, "file is required");
+  const file = ctx.request.files
+    ? Object.values(ctx.request.files)[0]
+    : undefined;
+  if (!file) {
+    throw InvalidRequestError("Request must include a file parameter");
+  }
 
   if (env.MAXIMUM_IMPORT_SIZE && file.size > env.MAXIMUM_IMPORT_SIZE) {
-    throw InvalidRequestError("The selected file was too large to import");
+    throw InvalidRequestError(
+      `The selected file was larger than the ${bytesToHumanReadable(
+        env.MAXIMUM_IMPORT_SIZE
+      )} maximum size`
+    );
   }
 
   assertUuid(collectionId, "collectionId must be an uuid");
@@ -1274,7 +1093,6 @@ router.post("documents.import", auth(), async (ctx) => {
     assertPositiveInteger(index, "index must be an integer (>=0)");
   }
   const { user } = ctx.state;
-  authorize(user, "createDocument", user.team);
 
   const collection = await Collection.scope({
     method: ["withMembership", user.id],
@@ -1354,7 +1172,6 @@ router.post("documents.create", auth(), async (ctx) => {
     assertPositiveInteger(index, "index must be an integer (>=0)");
   }
   const { user } = ctx.state;
-  authorize(user, "createDocument", user.team);
 
   const collection = await Collection.scope({
     method: ["withMembership", user.id],

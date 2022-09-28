@@ -2,6 +2,7 @@ import removeMarkdown from "@tommoor/remove-markdown";
 import invariant from "invariant";
 import { compact, find, map, uniq } from "lodash";
 import randomstring from "randomstring";
+import type { SaveOptions } from "sequelize";
 import {
   Transaction,
   Op,
@@ -9,14 +10,12 @@ import {
   FindOptions,
   ScopeOptions,
   WhereOptions,
-  SaveOptions,
 } from "sequelize";
 import {
   ForeignKey,
   BelongsTo,
   Column,
   Default,
-  Length,
   PrimaryKey,
   Table,
   BeforeValidate,
@@ -28,15 +27,18 @@ import {
   AfterCreate,
   Scopes,
   DataType,
+  Length as SimpleLength,
+  IsNumeric,
+  IsDate,
 } from "sequelize-typescript";
 import MarkdownSerializer from "slate-md-serializer";
 import isUUID from "validator/lib/isUUID";
-import { MAX_TITLE_LENGTH } from "@shared/constants";
 import { DateFilter } from "@shared/types";
 import getTasks from "@shared/utils/getTasks";
 import parseTitle from "@shared/utils/parseTitle";
 import unescape from "@shared/utils/unescape";
 import { SLUG_URL_REGEX } from "@shared/utils/urlHelpers";
+import { DocumentValidation } from "@shared/validations";
 import slugify from "@server/utils/slugify";
 import Backlink from "./Backlink";
 import Collection from "./Collection";
@@ -48,6 +50,7 @@ import User from "./User";
 import View from "./View";
 import ParanoidModel from "./base/ParanoidModel";
 import Fix from "./decorators/Fix";
+import Length from "./validators/Length";
 
 export type SearchResponse = {
   results: {
@@ -180,14 +183,18 @@ export const DOCUMENT_VERSION = 2;
 @Table({ tableName: "documents", modelName: "document" })
 @Fix
 class Document extends ParanoidModel {
+  @SimpleLength({
+    min: 10,
+    max: 10,
+    msg: `urlId must be 10 characters`,
+  })
   @PrimaryKey
   @Column
   urlId: string;
 
   @Length({
-    min: 0,
-    max: MAX_TITLE_LENGTH,
-    msg: `Document title must be less than ${MAX_TITLE_LENGTH} characters`,
+    max: DocumentValidation.maxTitleLength,
+    msg: `Document title must be ${DocumentValidation.maxTitleLength} characters or less`,
   })
   @Column
   title: string;
@@ -195,6 +202,7 @@ class Document extends ParanoidModel {
   @Column(DataType.ARRAY(DataType.STRING))
   previousTitles: string[] = [];
 
+  @IsNumeric
   @Column(DataType.SMALLINT)
   version: number;
 
@@ -204,15 +212,27 @@ class Document extends ParanoidModel {
   @Column
   fullWidth: boolean;
 
+  @SimpleLength({
+    max: 255,
+    msg: `editorVersion must be 255 characters or less`,
+  })
   @Column
   editorVersion: string;
 
+  @Length({
+    max: 1,
+    msg: `Emoji must be a single character`,
+  })
   @Column
   emoji: string | null;
 
   @Column(DataType.TEXT)
   text: string;
 
+  @SimpleLength({
+    max: DocumentValidation.maxStateLength,
+    msg: `Document collaborative state is too large, you must create a new document`,
+  })
   @Column(DataType.BLOB)
   state: Uint8Array;
 
@@ -220,13 +240,16 @@ class Document extends ParanoidModel {
   @Column
   isWelcome: boolean;
 
+  @IsNumeric
   @Default(0)
   @Column(DataType.INTEGER)
   revisionCount: number;
 
+  @IsDate
   @Column
   archivedAt: Date | null;
 
+  @IsDate
   @Column
   publishedAt: Date | null;
 
@@ -313,7 +336,7 @@ class Document extends ParanoidModel {
 
   @BeforeUpdate
   static processUpdate(model: Document) {
-    const { emoji } = parseTitle(model.text);
+    const { emoji } = parseTitle(model.title);
     // emoji in the title is split out for easier display
     model.emoji = emoji || null;
 
@@ -413,12 +436,13 @@ class Document extends ParanoidModel {
     id: string,
     options: FindOptions<Document> & {
       userId?: string;
+      includeState?: boolean;
     } = {}
-  ) {
+  ): Promise<Document | null> {
     // allow default preloading of collection membership if `userId` is passed in find options
     // almost every endpoint needs the collection membership to determine policy permissions.
     const scope = this.scope([
-      "withoutState",
+      ...(options.includeState ? [] : ["withoutState"]),
       "withDrafts",
       {
         method: ["withCollectionPermissions", options.userId, options.paranoid],
@@ -447,7 +471,7 @@ class Document extends ParanoidModel {
       });
     }
 
-    return undefined;
+    return null;
   }
 
   static async searchForTeam(
@@ -455,7 +479,7 @@ class Document extends ParanoidModel {
     query: string,
     options: SearchOptions = {}
   ): Promise<SearchResponse> {
-    const wildcardQuery = `${escape(query)}:*`;
+    const wildcardQuery = `${escapeQuery(query)}:*`;
     const {
       snippetMinWords = 20,
       snippetMaxWords = 30,
@@ -510,7 +534,7 @@ class Document extends ParanoidModel {
     SELECT
       id,
       ts_rank(documents."searchVector", to_tsquery('english', :query)) as "searchRanking",
-      ts_headline('english', "text", to_tsquery('english', :query), 'MaxFragments=1, MinWords=:snippetMinWords, MaxWords=:snippetMaxWords') as "searchContext"
+      ts_headline('english', "text", to_tsquery('english', :query), :headlineOptions) as "searchContext"
     FROM documents
     WHERE ${whereClause}
     ORDER BY
@@ -529,8 +553,7 @@ class Document extends ParanoidModel {
       query: wildcardQuery,
       collectionIds,
       documentIds,
-      snippetMinWords,
-      snippetMaxWords,
+      headlineOptions: `MaxFragments=1, MinWords=${snippetMinWords}, MaxWords=${snippetMaxWords}`,
     };
     const resultsQuery = this.sequelize!.query(selectSql, {
       type: QueryTypes.SELECT,
@@ -584,7 +607,7 @@ class Document extends ParanoidModel {
       limit = 15,
       offset = 0,
     } = options;
-    const wildcardQuery = `${escape(query)}:*`;
+    const wildcardQuery = `${escapeQuery(query)}:*`;
 
     // Ensure we're filtering by the users accessible collections. If
     // collectionId is passed as an option it is assumed that the authorization
@@ -636,7 +659,7 @@ class Document extends ParanoidModel {
   SELECT
     id,
     ts_rank(documents."searchVector", to_tsquery('english', :query)) as "searchRanking",
-    ts_headline('english', "text", to_tsquery('english', :query), 'MaxFragments=1, MinWords=:snippetMinWords, MaxWords=:snippetMaxWords') as "searchContext"
+    ts_headline('english', "text", to_tsquery('english', :query), :headlineOptions) as "searchContext"
   FROM documents
   WHERE ${whereClause}
   ORDER BY
@@ -657,8 +680,7 @@ class Document extends ParanoidModel {
       query: wildcardQuery,
       collectionIds,
       dateFilter,
-      snippetMinWords,
-      snippetMaxWords,
+      headlineOptions: `MaxFragments=1, MinWords=${snippetMinWords}, MaxWords=${snippetMaxWords}`,
     };
     const resultsQuery = this.sequelize!.query(selectSql, {
       type: QueryTypes.SELECT,
@@ -706,16 +728,6 @@ class Document extends ParanoidModel {
 
   // instance methods
 
-  toMarkdown = () => {
-    const text = unescape(this.text);
-
-    if (this.version) {
-      return `# ${this.title}\n\n${text}`;
-    }
-
-    return text;
-  };
-
   migrateVersion = () => {
     let migrated = false;
 
@@ -747,10 +759,31 @@ class Document extends ParanoidModel {
     return undefined;
   };
 
+  get titleWithDefault(): string {
+    return this.title || "Untitled";
+  }
+
+  /**
+   * Get a list of users that have collaborated on this document
+   *
+   * @param options FindOptions
+   * @returns A promise that resolve to a list of users
+   */
+  collaborators = async (options?: FindOptions<User>): Promise<User[]> => {
+    const users = await Promise.all(
+      this.collaboratorIds.map((collaboratorId) =>
+        User.findByPk(collaboratorId, options)
+      )
+    );
+
+    return compact(users);
+  };
+
   /**
    * Calculate all of the document ids that are children of this document by
    * iterating through parentDocumentId references in the most efficient way.
    *
+   * @param where query options to further filter the documents
    * @param options FindOptions
    * @returns A promise that resolves to a list of document ids
    */
@@ -990,7 +1023,7 @@ class Document extends ParanoidModel {
   };
 }
 
-function escape(query: string): string {
+function escapeQuery(query: string): string {
   // replace "\" with escaped "\\" because sequelize.escape doesn't do it
   // https://github.com/sequelize/sequelize/issues/2950
   return Document.sequelize!.escape(query).replace(/\\/g, "\\\\");

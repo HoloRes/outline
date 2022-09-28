@@ -1,5 +1,6 @@
 import { Transaction } from "sequelize";
 import { Event, Document, User } from "@server/models";
+import DocumentHelper from "@server/models/helpers/DocumentHelper";
 
 type Props = {
   /** The user updating the document */
@@ -60,10 +61,12 @@ export default async function documentUpdater({
   if (fullWidth !== undefined) {
     document.fullWidth = fullWidth;
   }
-  if (!user.team?.collaborativeEditing) {
-    if (append) {
+  if (text !== undefined) {
+    if (user.team?.collaborativeEditing) {
+      document = DocumentHelper.applyMarkdownToDocument(document, text, append);
+    } else if (append) {
       document.text += text;
-    } else if (text !== undefined) {
+    } else {
       document.text = text;
     }
   }

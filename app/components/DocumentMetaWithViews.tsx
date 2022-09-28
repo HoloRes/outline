@@ -1,3 +1,4 @@
+import { LocationDescriptor } from "history";
 import { observer, useObserver } from "mobx-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
@@ -12,7 +13,7 @@ import useStores from "~/hooks/useStores";
 type Props = {
   document: Document;
   isDraft: boolean;
-  to?: string;
+  to?: LocationDescriptor;
   rtl?: boolean;
 };
 
@@ -23,14 +24,6 @@ function DocumentMetaWithViews({ to, isDraft, document, ...rest }: Props) {
   const totalViewers = documentViews.length;
   const onlyYou = totalViewers === 1 && documentViews[0].user.id;
 
-  React.useEffect(() => {
-    if (!document.isDeleted) {
-      views.fetchPage({
-        documentId: document.id,
-      });
-    }
-  }, [views, document.id, document.isDeleted]);
-
   const popover = usePopoverState({
     gutter: 8,
     placement: "bottom",
@@ -38,7 +31,7 @@ function DocumentMetaWithViews({ to, isDraft, document, ...rest }: Props) {
   });
 
   return (
-    <Meta document={document} to={to} {...rest}>
+    <Meta document={document} to={to} replace {...rest}>
       {totalViewers && !isDraft ? (
         <PopoverDisclosure {...popover}>
           {(props) => (

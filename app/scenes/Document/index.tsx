@@ -2,21 +2,36 @@ import * as React from "react";
 import { StaticContext } from "react-router";
 import { RouteComponentProps } from "react-router-dom";
 import useCurrentTeam from "~/hooks/useCurrentTeam";
+import useLastVisitedPath from "~/hooks/useLastVisitedPath";
 import useStores from "~/hooks/useStores";
 import DataLoader from "./components/DataLoader";
 import Document from "./components/Document";
 import SocketPresence from "./components/SocketPresence";
 
-export default function DocumentScene(
-  props: RouteComponentProps<
-    { documentSlug: string; revisionId: string },
-    StaticContext,
-    { title?: string }
-  >
-) {
+type Params = {
+  documentSlug: string;
+  revisionId?: string;
+  shareId?: string;
+};
+
+type LocationState = {
+  title?: string;
+  restore?: boolean;
+  revisionId?: string;
+};
+
+type Props = RouteComponentProps<Params, StaticContext, LocationState>;
+
+export default function DocumentScene(props: Props) {
   const { ui } = useStores();
   const team = useCurrentTeam();
   const { documentSlug, revisionId } = props.match.params;
+  const currentPath = props.location.pathname;
+  const [, setLastVisitedPath] = useLastVisitedPath();
+
+  React.useEffect(() => {
+    setLastVisitedPath(currentPath);
+  }, [currentPath, setLastVisitedPath]);
 
   React.useEffect(() => {
     return () => ui.clearActiveDocument();
@@ -47,12 +62,12 @@ export default function DocumentScene(
         if (isActive && !isMultiplayer) {
           return (
             <SocketPresence documentId={document.id} isEditing={isEditing}>
-              <Document document={document} match={props.match} {...rest} />
+              <Document document={document} {...rest} />
             </SocketPresence>
           );
         }
 
-        return <Document document={document} match={props.match} {...rest} />;
+        return <Document document={document} {...rest} />;
       }}
     </DataLoader>
   );

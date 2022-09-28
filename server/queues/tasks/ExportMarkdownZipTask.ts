@@ -1,5 +1,4 @@
 import fs from "fs";
-import invariant from "invariant";
 import { truncate } from "lodash";
 import ExportFailureEmail from "@server/emails/templates/ExportFailureEmail";
 import ExportSuccessEmail from "@server/emails/templates/ExportSuccessEmail";
@@ -22,15 +21,14 @@ export default class ExportMarkdownZipTask extends BaseTask<Props> {
    * @param props The props
    */
   public async perform({ fileOperationId }: Props) {
-    const fileOperation = await FileOperation.findByPk(fileOperationId);
-    invariant(fileOperation, "fileOperation not found");
+    const fileOperation = await FileOperation.findByPk(fileOperationId, {
+      rejectOnEmpty: true,
+    });
 
     const [team, user] = await Promise.all([
-      Team.findByPk(fileOperation.teamId),
-      User.findByPk(fileOperation.userId),
+      Team.findByPk(fileOperation.teamId, { rejectOnEmpty: true }),
+      User.findByPk(fileOperation.userId, { rejectOnEmpty: true }),
     ]);
-    invariant(team, "team operation not found");
-    invariant(user, "user operation not found");
 
     const collectionIds = fileOperation.collectionId
       ? [fileOperation.collectionId]
@@ -74,8 +72,10 @@ export default class ExportMarkdownZipTask extends BaseTask<Props> {
 
       await ExportSuccessEmail.schedule({
         to: user.email,
+        userId: user.id,
         id: fileOperation.id,
         teamUrl: team.url,
+        teamId: team.id,
       });
     } catch (error) {
       await this.updateFileOperation(fileOperation, {
@@ -84,7 +84,9 @@ export default class ExportMarkdownZipTask extends BaseTask<Props> {
       });
       await ExportFailureEmail.schedule({
         to: user.email,
+        userId: user.id,
         teamUrl: team.url,
+        teamId: team.id,
       });
       throw error;
     }
@@ -122,7 +124,7 @@ export default class ExportMarkdownZipTask extends BaseTask<Props> {
   public get options() {
     return {
       priority: TaskPriority.Background,
-      attempts: 2,
+      attempts: 1,
     };
   }
 }

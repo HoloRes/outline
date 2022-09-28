@@ -1,3 +1,4 @@
+import { IncomingMessage } from "http";
 import chalk from "chalk";
 import { isEmpty } from "lodash";
 import winston from "winston";
@@ -18,6 +19,7 @@ type LogCategory =
   | "processor"
   | "email"
   | "queue"
+  | "websockets"
   | "database"
   | "utils";
 type Extra = Record<string, any>;
@@ -100,9 +102,17 @@ class Logger {
    * @param message A description of the error
    * @param error The error that occurred
    * @param extra Arbitrary data to be logged that will appear in prod logs
+   * @param request An optional request object to attach to the error
    */
-  error(message: string, error: Error, extra?: Extra) {
-    Metrics.increment("logger.error");
+  error(
+    message: string,
+    error: Error,
+    extra?: Extra,
+    request?: IncomingMessage
+  ) {
+    Metrics.increment("logger.error", {
+      name: error.name,
+    });
     Tracing.setError(error);
 
     if (env.SENTRY_DSN) {
@@ -111,6 +121,12 @@ class Logger {
 
         for (const key in extra) {
           scope.setExtra(key, extra[key]);
+        }
+
+        if (request) {
+          scope.addEventProcessor(function (event) {
+            return Sentry.Handlers.parseRequest(event, request);
+          });
         }
 
         Sentry.captureException(error);

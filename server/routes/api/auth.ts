@@ -1,11 +1,18 @@
-import invariant from "invariant";
 import Router from "koa-router";
-import { find } from "lodash";
+import { find, uniqBy } from "lodash";
 import { parseDomain } from "@shared/utils/domains";
+import { sequelize } from "@server/database/sequelize";
 import env from "@server/env";
 import auth from "@server/middlewares/authentication";
-import { Team, TeamDomain } from "@server/models";
-import { presentUser, presentTeam, presentPolicies } from "@server/presenters";
+import { Event, Team } from "@server/models";
+import {
+  presentUser,
+  presentTeam,
+  presentPolicies,
+  presentAvailableTeam,
+} from "@server/presenters";
+import ValidateSSOAccessTask from "@server/queues/tasks/ValidateSSOAccessTask";
+import { getSessionsInCookie } from "@server/utils/authentication";
 import providers from "../auth/providers";
 
 const router = new Router();
@@ -22,6 +29,7 @@ function filterProviders(team?: Team) {
 
       return (
         !team ||
+        env.DEPLOYMENT !== "hosted" ||
         find(team.authenticationProviders, {
           name: provider.id,
           enabled: true,
@@ -40,10 +48,9 @@ router.post("auth.config", async (ctx) => {
   // brand for the knowledge base and it's guest signin option is used for the
   // root login page.
   if (env.DEPLOYMENT !== "hosted") {
-    const teams = await Team.scope("withAuthenticationProviders").findAll();
+    const team = await Team.scope("withAuthenticationProviders").findOne();
 
-    if (teams.length === 1) {
-      const team = teams[0];
+    if (team) {
       ctx.body = {
         data: {
           name: team.name,
@@ -106,10 +113,22 @@ router.post("auth.config", async (ctx) => {
 
 router.post("auth.info", auth(), async (ctx) => {
   const { user } = ctx.state;
-  const team = await Team.findByPk(user.teamId, {
-    include: [{ model: TeamDomain }],
-  });
-  invariant(team, "Team not found");
+  const sessions = getSessionsInCookie(ctx);
+  const signedInTeamIds = Object.keys(sessions);
+
+  const [team, signedInTeams, availableTeams] = await Promise.all([
+    Team.scope("withDomains").findByPk(user.teamId, {
+      rejectOnEmpty: true,
+    }),
+    Team.findAll({
+      where: {
+        id: signedInTeamIds,
+      },
+    }),
+    user.availableTeams(),
+  ]);
+
+  await ValidateSSOAccessTask.schedule({ userId: user.id });
 
   ctx.body = {
     data: {
@@ -117,8 +136,44 @@ router.post("auth.info", auth(), async (ctx) => {
         includeDetails: true,
       }),
       team: presentTeam(team),
+      availableTeams: uniqBy(
+        [...signedInTeams, ...availableTeams],
+        "id"
+      ).map((team) =>
+        presentAvailableTeam(
+          team,
+          signedInTeamIds.includes(team.id) || team.id === user.teamId
+        )
+      ),
     },
     policies: presentPolicies(user, [team]),
+  };
+});
+
+router.post("auth.delete", auth(), async (ctx) => {
+  const { user } = ctx.state;
+
+  await sequelize.transaction(async (transaction) => {
+    await user.rotateJwtSecret({ transaction });
+    await Event.create(
+      {
+        name: "users.signout",
+        actorId: user.id,
+        userId: user.id,
+        teamId: user.teamId,
+        data: {
+          name: user.name,
+        },
+        ip: ctx.request.ip,
+      },
+      {
+        transaction,
+      }
+    );
+  });
+
+  ctx.body = {
+    success: true,
   };
 });
 

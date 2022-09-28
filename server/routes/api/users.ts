@@ -1,16 +1,25 @@
+import crypto from "crypto";
 import Router from "koa-router";
+import { has } from "lodash";
 import { Op, WhereOptions } from "sequelize";
+import { UserPreference } from "@shared/types";
+import { UserValidation } from "@shared/validations";
+import { RateLimiterStrategy } from "@server/RateLimiter";
+import userDemoter from "@server/commands/userDemoter";
 import userDestroyer from "@server/commands/userDestroyer";
 import userInviter from "@server/commands/userInviter";
 import userSuspender from "@server/commands/userSuspender";
+import userUnsuspender from "@server/commands/userUnsuspender";
 import { sequelize } from "@server/database/sequelize";
+import ConfirmUserDeleteEmail from "@server/emails/templates/ConfirmUserDeleteEmail";
 import InviteEmail from "@server/emails/templates/InviteEmail";
 import env from "@server/env";
 import { ValidationError } from "@server/errors";
 import logger from "@server/logging/Logger";
 import auth from "@server/middlewares/authentication";
+import { rateLimiter } from "@server/middlewares/rateLimiter";
 import { Event, User, Team } from "@server/models";
-import { UserFlag } from "@server/models/User";
+import { UserFlag, UserRole } from "@server/models/User";
 import { can, authorize } from "@server/policies";
 import { presentUser, presentPolicies } from "@server/presenters";
 import {
@@ -18,10 +27,14 @@ import {
   assertSort,
   assertPresent,
   assertArray,
+  assertUuid,
+  assertKeysIn,
+  assertBoolean,
 } from "@server/validation";
 import pagination from "./middlewares/pagination";
 
 const router = new Router();
+const emailEnabled = !!(env.SMTP_HOST || env.ENVIRONMENT === "development");
 
 router.post("users.list", auth(), pagination(), async (ctx) => {
   let { direction } = ctx.body;
@@ -44,6 +57,16 @@ router.post("users.list", auth(), pagination(), async (ctx) => {
     teamId: actor.teamId,
   };
 
+  // Filter out suspended users if we're not an admin
+  if (!actor.isAdmin) {
+    where = {
+      ...where,
+      suspendedAt: {
+        [Op.eq]: null,
+      },
+    };
+  }
+
   switch (filter) {
     case "invited": {
       where = { ...where, lastActiveAt: null };
@@ -61,12 +84,14 @@ router.post("users.list", auth(), pagination(), async (ctx) => {
     }
 
     case "suspended": {
-      where = {
-        ...where,
-        suspendedAt: {
-          [Op.ne]: null,
-        },
-      };
+      if (actor.isAdmin) {
+        where = {
+          ...where,
+          suspendedAt: {
+            [Op.ne]: null,
+          },
+        };
+      }
       break;
     }
 
@@ -153,7 +178,7 @@ router.post("users.info", auth(), async (ctx) => {
 
 router.post("users.update", auth(), async (ctx) => {
   const { user } = ctx.state;
-  const { name, avatarUrl, language } = ctx.body;
+  const { name, avatarUrl, language, preferences } = ctx.body;
   if (name) {
     user.name = name;
   }
@@ -162,6 +187,16 @@ router.post("users.update", auth(), async (ctx) => {
   }
   if (language) {
     user.language = language;
+  }
+  if (preferences) {
+    assertKeysIn(preferences, UserPreference);
+    if (has(preferences, UserPreference.RememberLastPath)) {
+      assertBoolean(preferences.rememberLastPath);
+      user.setPreference(
+        UserPreference.RememberLastPath,
+        preferences.rememberLastPath
+      );
+    }
   }
   await user.save();
   await Event.create({
@@ -211,23 +246,21 @@ router.post("users.promote", auth(), async (ctx) => {
 
 router.post("users.demote", auth(), async (ctx) => {
   const userId = ctx.body.id;
-  const teamId = ctx.state.user.teamId;
   let { to } = ctx.body;
-  const actor = ctx.state.user;
+  const actor = ctx.state.user as User;
   assertPresent(userId, "id is required");
-  to = to === "viewer" ? "viewer" : "member";
-  const user = await User.findByPk(userId);
+
+  to = (to === "viewer" ? "viewer" : "member") as UserRole;
+
+  const user = await User.findByPk(userId, {
+    rejectOnEmpty: true,
+  });
   authorize(actor, "demote", user);
 
-  await user.demote(teamId, to);
-  await Event.create({
-    name: "users.demote",
+  await userDemoter({
+    to,
+    user,
     actorId: actor.id,
-    userId,
-    teamId,
-    data: {
-      name: user.name,
-    },
     ip: ctx.request.ip,
   });
   const includeDetails = can(actor, "readDetails", user);
@@ -244,7 +277,9 @@ router.post("users.suspend", auth(), async (ctx) => {
   const userId = ctx.body.id;
   const actor = ctx.state.user;
   assertPresent(userId, "id is required");
-  const user = await User.findByPk(userId);
+  const user = await User.findByPk(userId, {
+    rejectOnEmpty: true,
+  });
   authorize(actor, "suspend", user);
 
   await userSuspender({
@@ -264,21 +299,16 @@ router.post("users.suspend", auth(), async (ctx) => {
 
 router.post("users.activate", auth(), async (ctx) => {
   const userId = ctx.body.id;
-  const teamId = ctx.state.user.teamId;
   const actor = ctx.state.user;
   assertPresent(userId, "id is required");
-  const user = await User.findByPk(userId);
+  const user = await User.findByPk(userId, {
+    rejectOnEmpty: true,
+  });
   authorize(actor, "activate", user);
 
-  await user.activate();
-  await Event.create({
-    name: "users.activate",
+  await userUnsuspender({
+    user,
     actorId: actor.id,
-    userId,
-    teamId,
-    data: {
-      name: user.name,
-    },
     ip: ctx.request.ip,
   });
   const includeDetails = can(actor, "readDetails", user);
@@ -291,26 +321,31 @@ router.post("users.activate", auth(), async (ctx) => {
   };
 });
 
-router.post("users.invite", auth(), async (ctx) => {
-  const { invites } = ctx.body;
-  assertArray(invites, "invites must be an array");
-  const { user } = ctx.state;
-  const team = await Team.findByPk(user.teamId);
-  authorize(user, "inviteUser", team);
+router.post(
+  "users.invite",
+  auth(),
+  rateLimiter(RateLimiterStrategy.TenPerHour),
+  async (ctx) => {
+    const { invites } = ctx.body;
+    assertArray(invites, "invites must be an array");
+    const { user } = ctx.state;
+    const team = await Team.findByPk(user.teamId);
+    authorize(user, "inviteUser", team);
 
-  const response = await userInviter({
-    user,
-    invites,
-    ip: ctx.request.ip,
-  });
+    const response = await userInviter({
+      user,
+      invites: invites.slice(0, UserValidation.maxInvitesPerRequest),
+      ip: ctx.request.ip,
+    });
 
-  ctx.body = {
-    data: {
-      sent: response.sent,
-      users: response.users.map((user) => presentUser(user)),
-    },
-  };
-});
+    ctx.body = {
+      data: {
+        sent: response.sent,
+        users: response.users.map((user) => presentUser(user)),
+      },
+    };
+  }
+);
 
 router.post("users.resendInvite", auth(), async (ctx) => {
   const { id } = ctx.body;
@@ -354,26 +389,72 @@ router.post("users.resendInvite", auth(), async (ctx) => {
   };
 });
 
-router.post("users.delete", auth(), async (ctx) => {
-  const { confirmation, id } = ctx.body;
-  assertPresent(confirmation, "confirmation is required");
-  const actor = ctx.state.user;
-  let user = actor;
+router.post(
+  "users.requestDelete",
+  auth(),
+  rateLimiter(RateLimiterStrategy.FivePerHour),
+  async (ctx) => {
+    const { user } = ctx.state;
+    authorize(user, "delete", user);
 
-  if (id) {
-    user = await User.findByPk(id);
+    if (emailEnabled) {
+      await ConfirmUserDeleteEmail.schedule({
+        to: user.email,
+        deleteConfirmationCode: user.deleteConfirmationCode,
+      });
+    }
+
+    ctx.body = {
+      success: true,
+    };
   }
+);
 
-  authorize(actor, "delete", user);
-  await userDestroyer({
-    user,
-    actor,
-    ip: ctx.request.ip,
-  });
+router.post(
+  "users.delete",
+  auth(),
+  rateLimiter(RateLimiterStrategy.TenPerHour),
+  async (ctx) => {
+    const { id, code = "" } = ctx.body;
+    let user: User;
 
-  ctx.body = {
-    success: true,
-  };
-});
+    if (id) {
+      assertUuid(id, "id must be a UUID");
+      user = await User.findByPk(id, {
+        rejectOnEmpty: true,
+      });
+    } else {
+      user = ctx.state.user;
+    }
+    authorize(user, "delete", user);
+
+    // If we're attempting to delete our own account then a confirmation code
+    // is required. This acts as CSRF protection.
+    if ((!id || id === ctx.state.user.id) && emailEnabled) {
+      const deleteConfirmationCode = user.deleteConfirmationCode;
+
+      if (
+        !code ||
+        code.length !== deleteConfirmationCode.length ||
+        !crypto.timingSafeEqual(
+          Buffer.from(code),
+          Buffer.from(deleteConfirmationCode)
+        )
+      ) {
+        throw ValidationError("The confirmation code was incorrect");
+      }
+    }
+
+    await userDestroyer({
+      user,
+      actor: user,
+      ip: ctx.request.ip,
+    });
+
+    ctx.body = {
+      success: true,
+    };
+  }
+);
 
 export default router;

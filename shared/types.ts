@@ -21,3 +21,31 @@ export type PublicEnv = {
   GOOGLE_ANALYTICS_ID: string | undefined;
   RELEASE: string | undefined;
 };
+
+export enum IntegrationType {
+  Post = "post",
+  Command = "command",
+  Embed = "embed",
+}
+
+export enum CollectionPermission {
+  Read = "read",
+  ReadWrite = "read_write",
+}
+
+export type IntegrationSettings<T> = T extends IntegrationType.Embed
+  ? { url: string }
+  : T extends IntegrationType.Post
+  ? { url: string; channel: string; channelId: string }
+  : T extends IntegrationType.Post
+  ? { serviceTeamId: string }
+  :
+      | { url: string }
+      | { url: string; channel: string; channelId: string }
+      | { serviceTeamId: string };
+
+export enum UserPreference {
+  RememberLastPath = "rememberLastPath",
+}
+
+export type UserPreferences = { [key in UserPreference]?: boolean };

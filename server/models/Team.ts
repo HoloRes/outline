@@ -11,19 +11,18 @@ import {
   Table,
   Unique,
   IsIn,
-  BeforeSave,
   HasMany,
   Scopes,
-  Length,
   Is,
   DataType,
+  IsUUID,
+  IsUrl,
+  AllowNull,
 } from "sequelize-typescript";
-import { v4 as uuidv4 } from "uuid";
+import { CollectionPermission } from "@shared/types";
 import { getBaseDomain, RESERVED_SUBDOMAINS } from "@shared/utils/domains";
 import env from "@server/env";
-import Logger from "@server/logging/Logger";
 import { generateAvatarUrl } from "@server/utils/avatars";
-import { publicS3Endpoint, uploadToS3FromUrl } from "@server/utils/s3";
 import AuthenticationProvider from "./AuthenticationProvider";
 import Collection from "./Collection";
 import Document from "./Document";
@@ -31,10 +30,18 @@ import TeamDomain from "./TeamDomain";
 import User from "./User";
 import ParanoidModel from "./base/ParanoidModel";
 import Fix from "./decorators/Fix";
+import IsFQDN from "./validators/IsFQDN";
+import Length from "./validators/Length";
+import NotContainsUrl from "./validators/NotContainsUrl";
 
 const readFile = util.promisify(fs.readFile);
 
+export type TeamPreferences = Record<string, unknown>;
+
 @Scopes(() => ({
+  withDomains: {
+    include: [{ model: TeamDomain }],
+  },
   withAuthenticationProviders: {
     include: [
       {
@@ -47,12 +54,18 @@ const readFile = util.promisify(fs.readFile);
 @Table({ tableName: "teams", modelName: "team" })
 @Fix
 class Team extends ParanoidModel {
+  @NotContainsUrl
+  @Length({ max: 255, msg: "name must be 255 characters or less" })
   @Column
   name: string;
 
   @IsLowercase
   @Unique
-  @Length({ min: 4, max: 32, msg: "Must be between 4 and 32 characters" })
+  @Length({
+    min: 4,
+    max: 32,
+    msg: "subdomain must be between 4 and 32 characters",
+  })
   @Is({
     args: [/^[a-z\d-]+$/, "i"],
     msg: "Must be only alphanumeric and dashes",
@@ -65,12 +78,18 @@ class Team extends ParanoidModel {
   subdomain: string | null;
 
   @Unique
+  @Length({ max: 255, msg: "domain must be 255 characters or less" })
+  @IsFQDN
   @Column
   domain: string | null;
 
+  @IsUUID(4)
   @Column(DataType.UUID)
   defaultCollectionId: string | null;
 
+  @AllowNull
+  @IsUrl
+  @Length({ max: 4096, msg: "avatarUrl must be 4096 characters or less" })
   @Column
   avatarUrl: string | null;
 
@@ -106,6 +125,10 @@ class Team extends ParanoidModel {
   @IsIn([["viewer", "member"]])
   @Column
   defaultUserRole: string;
+
+  @AllowNull
+  @Column(DataType.JSONB)
+  preferences: TeamPreferences | null;
 
   // getters
 
@@ -146,35 +169,6 @@ class Team extends ParanoidModel {
     );
   }
 
-  // TODO: Move to command
-  provisionSubdomain = async function (
-    requestedSubdomain: string,
-    options = {}
-  ) {
-    if (this.subdomain) {
-      return this.subdomain;
-    }
-    let subdomain = requestedSubdomain;
-    let append = 0;
-
-    for (;;) {
-      try {
-        await this.update(
-          {
-            subdomain,
-          },
-          options
-        );
-        break;
-      } catch (err) {
-        // subdomain was invalid or already used, try again
-        subdomain = `${requestedSubdomain}${++append}`;
-      }
-    }
-
-    return subdomain;
-  };
-
   provisionFirstCollection = async (userId: string) => {
     await this.sequelize!.transaction(async (transaction) => {
       const collection = await Collection.create(
@@ -185,7 +179,7 @@ class Team extends ParanoidModel {
           teamId: this.id,
           createdById: userId,
           sort: Collection.DEFAULT_SORT,
-          permission: "read_write",
+          permission: CollectionPermission.ReadWrite,
         },
         {
           transaction,
@@ -265,34 +259,6 @@ class Team extends ParanoidModel {
 
   @HasMany(() => TeamDomain)
   allowedDomains: TeamDomain[];
-
-  // hooks
-  @BeforeSave
-  static uploadAvatar = async (model: Team) => {
-    const endpoint = publicS3Endpoint();
-    const { avatarUrl } = model;
-
-    if (
-      avatarUrl &&
-      !avatarUrl.startsWith("/api") &&
-      !avatarUrl.startsWith(endpoint)
-    ) {
-      try {
-        const newUrl = await uploadToS3FromUrl(
-          avatarUrl,
-          `avatars/${model.id}/${uuidv4()}`,
-          "public-read"
-        );
-        if (newUrl) {
-          model.avatarUrl = newUrl;
-        }
-      } catch (err) {
-        Logger.error("Error uploading avatar to S3", err, {
-          url: avatarUrl,
-        });
-      }
-    }
-  };
 }
 
 export default Team;

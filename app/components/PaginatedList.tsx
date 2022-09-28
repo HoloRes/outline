@@ -29,17 +29,25 @@ type Props<T> = WithTranslation &
     empty?: React.ReactNode;
     loading?: React.ReactElement;
     items?: T[];
+    className?: string;
     renderItem: (
       item: T,
       index: number,
       compositeProps: CompositeStateReturn
     ) => React.ReactNode;
+    renderError?: (options: {
+      error: Error;
+      retry: () => void;
+    }) => React.ReactNode;
     renderHeading?: (name: React.ReactElement<any> | string) => React.ReactNode;
     onEscape?: (ev: React.KeyboardEvent<HTMLDivElement>) => void;
   };
 
 @observer
 class PaginatedList<T extends PaginatedItem> extends React.Component<Props<T>> {
+  @observable
+  error?: Error;
+
   @observable
   isFetchingMore = false;
 
@@ -80,6 +88,7 @@ class PaginatedList<T extends PaginatedItem> extends React.Component<Props<T>> {
     this.isFetchingMore = false;
   };
 
+  @action
   fetchResults = async () => {
     if (!this.props.fetch) {
       return;
@@ -87,25 +96,30 @@ class PaginatedList<T extends PaginatedItem> extends React.Component<Props<T>> {
     this.isFetching = true;
     const counter = ++this.fetchCounter;
     const limit = DEFAULT_PAGINATION_LIMIT;
+    this.error = undefined;
 
-    const results = await this.props.fetch({
-      limit,
-      offset: this.offset,
-      ...this.props.options,
-    });
+    try {
+      const results = await this.props.fetch({
+        limit,
+        offset: this.offset,
+        ...this.props.options,
+      });
 
-    if (results && (results.length === 0 || results.length < limit)) {
-      this.allowLoadMore = false;
-    } else {
-      this.offset += limit;
-    }
+      if (results && (results.length === 0 || results.length < limit)) {
+        this.allowLoadMore = false;
+      } else {
+        this.offset += limit;
+      }
 
-    this.renderCount += limit;
-
-    // only the most recent fetch should end the loading state
-    if (counter >= this.fetchCounter) {
-      this.isFetching = false;
-      this.isFetchingMore = false;
+      this.renderCount += limit;
+    } catch (err) {
+      this.error = err;
+    } finally {
+      // only the most recent fetch should end the loading state
+      if (counter >= this.fetchCounter) {
+        this.isFetching = false;
+        this.isFetchingMore = false;
+      }
     }
   };
 
@@ -138,6 +152,7 @@ class PaginatedList<T extends PaginatedItem> extends React.Component<Props<T>> {
       auth,
       empty = null,
       renderHeading,
+      renderError,
       onEscape,
     } = this.props;
 
@@ -150,13 +165,19 @@ class PaginatedList<T extends PaginatedItem> extends React.Component<Props<T>> {
       return (
         this.props.loading || (
           <DelayedMount>
-            <PlaceholderList count={5} />
+            <div className={this.props.className}>
+              <PlaceholderList count={5} />
+            </div>
           </DelayedMount>
         )
       );
     }
 
     if (items?.length === 0) {
+      if (this.error && renderError) {
+        return renderError({ error: this.error, retry: this.fetchResults });
+      }
+
       return empty;
     }
 
@@ -166,6 +187,7 @@ class PaginatedList<T extends PaginatedItem> extends React.Component<Props<T>> {
         <ArrowKeyNavigation
           aria-label={this.props["aria-label"]}
           onEscape={onEscape}
+          className={this.props.className}
         >
           {(composite: CompositeStateReturn) => {
             let previousHeading = "";

@@ -2,9 +2,11 @@ import { EmailIcon } from "outline-icons";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import styled from "styled-components";
+import { parseDomain } from "@shared/utils/domains";
 import AuthLogo from "~/components/AuthLogo";
 import ButtonLarge from "~/components/ButtonLarge";
 import InputLarge from "~/components/InputLarge";
+import env from "~/env";
 import { client } from "~/utils/ApiClient";
 
 type Props = {
@@ -87,10 +89,20 @@ function AuthenticationProvider(props: Props) {
     );
   }
 
+  // If we're on a custom domain or a subdomain then the auth must point to the
+  // apex (env.URL) for authentication so that the state cookie can be set and read.
+  // We pass the host into the auth URL so that the server can redirect on error
+  // and keep the user on the same page.
+  const { custom, teamSubdomain, host } = parseDomain(window.location.origin);
+  const needsRedirect = custom || teamSubdomain;
+  const href = needsRedirect
+    ? `${env.URL}${authUrl}?host=${encodeURI(host)}`
+    : authUrl;
+
   return (
     <Wrapper>
       <ButtonLarge
-        onClick={() => (window.location.href = authUrl)}
+        onClick={() => (window.location.href = href)}
         icon={<AuthLogo providerName={id} />}
         fullwidth
       >

@@ -2,9 +2,11 @@ import { ActionContext } from "~/types";
 
 export const CollectionSection = ({ t }: ActionContext) => t("Collection");
 
-export const DebugSection = ({ t }: ActionContext) => t("Debug");
+export const DeveloperSection = ({ t }: ActionContext) => t("Debug");
 
 export const DocumentSection = ({ t }: ActionContext) => t("Document");
+
+export const RevisionSection = ({ t }: ActionContext) => t("Revision");
 
 export const SettingsSection = ({ t }: ActionContext) => t("Settings");
 

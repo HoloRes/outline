@@ -22,6 +22,7 @@ import {
 import { languages } from "@shared/i18n";
 import { CannotUseWithout } from "@server/utils/validators";
 import Deprecated from "./models/decorators/Deprecated";
+import { getArg } from "./utils/args";
 
 export class Environment {
   private validationPromise;
@@ -66,7 +67,7 @@ export class Environment {
   @IsUrl({
     require_tld: false,
     allow_underscores: true,
-    protocols: ["postgres"],
+    protocols: ["postgres", "postgresql"],
   })
   public DATABASE_URL = `${process.env.DATABASE_URL}`;
 
@@ -167,6 +168,15 @@ export class Environment {
   public WEB_CONCURRENCY = this.toOptionalNumber(process.env.WEB_CONCURRENCY);
 
   /**
+   * How long a request should be processed before giving up and returning an
+   * error response to the client, defaults to 10s
+   */
+  @IsNumber()
+  @IsOptional()
+  public REQUEST_TIMEOUT =
+    this.toOptionalNumber(process.env.REQUEST_TIMEOUT) ?? 10 * 1000;
+
+  /**
    * Base64 encoded private key if Outline is to perform SSL termination.
    */
   @IsOptional()
@@ -202,9 +212,14 @@ export class Environment {
   /**
    * A comma separated list of which services should be enabled on this
    * instance – defaults to all.
+   *
+   * If a services flag is passed it takes priority over the environment variable
+   * for example: --services=web,worker
    */
   public SERVICES =
-    process.env.SERVICES ?? "collaboration,websockets,worker,web";
+    getArg("services") ??
+    process.env.SERVICES ??
+    "collaboration,websockets,worker,web";
 
   /**
    * Auto-redirect to https in production. The default is true but you may set
@@ -484,6 +499,45 @@ export class Environment {
    * profile email".
    */
   public OIDC_SCOPES = process.env.OIDC_SCOPES ?? "openid profile email";
+
+  /**
+   * A string representing the version of the software.
+   *
+   * SOURCE_COMMIT is used by Docker Hub
+   * SOURCE_VERSION is used by Heroku
+   */
+  public VERSION = this.toOptionalString(
+    process.env.SOURCE_COMMIT || process.env.SOURCE_VERSION
+  );
+
+  /**
+   * A boolean switch to toggle the rate limiter at application web server.
+   */
+  @IsOptional()
+  @IsBoolean()
+  public RATE_LIMITER_ENABLED = this.toBoolean(
+    process.env.RATE_LIMITER_ENABLED ?? "false"
+  );
+
+  /**
+   * Set max allowed requests in a given duration for default rate limiter to
+   * trigger throttling, per IP address.
+   */
+  @IsOptional()
+  @IsNumber()
+  @CannotUseWithout("RATE_LIMITER_ENABLED")
+  public RATE_LIMITER_REQUESTS =
+    this.toOptionalNumber(process.env.RATE_LIMITER_REQUESTS) ?? 1000;
+
+  /**
+   * Set fixed duration window(in secs) for default rate limiter, elapsing which
+   * the request quota is reset (the bucket is refilled with tokens).
+   */
+  @IsOptional()
+  @IsNumber()
+  @CannotUseWithout("RATE_LIMITER_ENABLED")
+  public RATE_LIMITER_DURATION_WINDOW =
+    this.toOptionalNumber(process.env.RATE_LIMITER_DURATION_WINDOW) ?? 60;
 
   private toOptionalString(value: string | undefined) {
     return value ? value : undefined;

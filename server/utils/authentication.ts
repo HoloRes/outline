@@ -7,6 +7,20 @@ import env from "@server/env";
 import Logger from "@server/logging/Logger";
 import { User, Event, Team, Collection, View } from "@server/models";
 
+/**
+ * Parse and return the details from the "sessions" cookie in the request, if
+ * any. The cookie is on the apex domain and includes session details for
+ * other subdomains.
+ *
+ * @param ctx The Koa context
+ * @returns The session details
+ */
+export function getSessionsInCookie(ctx: Context) {
+  return JSON.parse(
+    decodeURIComponent(ctx.cookies.get("sessions") || "") || "{}"
+  );
+}
+
 export async function signIn(
   ctx: Context,
   user: User,
@@ -40,7 +54,8 @@ export async function signIn(
   }
 
   // update the database when the user last signed in
-  user.updateSignedIn(ctx.request.ip);
+  await user.updateSignedIn(ctx.request.ip);
+
   // don't await event creation for a faster sign-in
   Event.create({
     name: "users.signin",
@@ -59,6 +74,7 @@ export async function signIn(
   // only used to display a UI hint for the user for next time
   ctx.cookies.set("lastSignedIn", service, {
     httpOnly: false,
+    sameSite: true,
     expires: new Date("2100"),
     domain,
   });
@@ -67,9 +83,7 @@ export async function signIn(
   // to the teams subdomain if subdomains are enabled
   if (env.SUBDOMAINS_ENABLED && team.subdomain) {
     // get any existing sessions (teams signed in) and add this team
-    const existing = JSON.parse(
-      decodeURIComponent(ctx.cookies.get("sessions") || "") || "{}"
-    );
+    const existing = getSessionsInCookie(ctx);
     const sessions = encodeURIComponent(
       JSON.stringify({
         ...existing,
@@ -88,6 +102,7 @@ export async function signIn(
     ctx.redirect(`${team.url}/auth/redirect?token=${user.getTransferToken()}`);
   } else {
     ctx.cookies.set("accessToken", user.getJwtToken(), {
+      sameSite: true,
       httpOnly: false,
       expires,
     });

@@ -2,7 +2,7 @@ import * as Sentry from "@sentry/react";
 import invariant from "invariant";
 import { observable, action, computed, autorun, runInAction } from "mobx";
 import { getCookie, setCookie, removeCookie } from "tiny-cookie";
-import { getCookieDomain } from "@shared/utils/domains";
+import { getCookieDomain, parseDomain } from "@shared/utils/domains";
 import RootStore from "~/stores/RootStore";
 import Policy from "~/models/Policy";
 import Team from "~/models/Team";
@@ -144,7 +144,9 @@ export default class AuthStore {
   @action
   fetch = async () => {
     try {
-      const res = await client.post("/auth.info");
+      const res = await client.post("/auth.info", undefined, {
+        credentials: "same-origin",
+      });
       invariant(res?.data, "Auth not available");
       runInAction("AuthStore#fetch", () => {
         this.addPolicies(res.policies);
@@ -160,6 +162,23 @@ export default class AuthStore {
             scope.setExtra("team", team.name);
             scope.setExtra("teamId", team.id);
           });
+        }
+
+        // Redirect to the correct custom domain or team subdomain if needed
+        // Occurs when the (sub)domain is changed in admin and the user hits an old url
+        const { hostname, pathname } = window.location;
+
+        if (this.team.domain) {
+          if (this.team.domain !== hostname) {
+            window.location.href = `${team.url}${pathname}`;
+            return;
+          }
+        } else if (
+          env.SUBDOMAINS_ENABLED &&
+          parseDomain(hostname).teamSubdomain !== (team.subdomain ?? "")
+        ) {
+          window.location.href = `${team.url}${pathname}`;
+          return;
         }
 
         // If we came from a redirect then send the user immediately there
@@ -182,13 +201,17 @@ export default class AuthStore {
   };
 
   @action
-  deleteUser = async () => {
-    await client.post(`/users.delete`, {
-      confirmation: true,
-    });
+  requestDelete = () => {
+    return client.post(`/users.requestDelete`);
+  };
+
+  @action
+  deleteUser = async (data: { code: string }) => {
+    await client.post(`/users.delete`, data);
     runInAction("AuthStore#updateUser", () => {
       this.user = null;
       this.team = null;
+      this.policies = [];
       this.token = null;
     });
   };
@@ -198,6 +221,7 @@ export default class AuthStore {
     name?: string;
     avatarUrl?: string | null;
     language?: string;
+    preferences?: Record<string, boolean>;
   }) => {
     this.isSaving = true;
 
@@ -221,6 +245,7 @@ export default class AuthStore {
     collaborativeEditing?: boolean;
     defaultCollectionId?: string | null;
     subdomain?: string | null | undefined;
+    allowedDomains?: string[] | null | undefined;
   }) => {
     this.isSaving = true;
 
@@ -238,14 +263,6 @@ export default class AuthStore {
 
   @action
   logout = async (savePath = false) => {
-    // remove user and team from localStorage
-    Storage.set(AUTH_STORE, {
-      user: null,
-      team: null,
-      policies: [],
-    });
-    this.token = null;
-
     // if this logout was forced from an authenticated route then
     // save the current path so we can go back there once signed in
     if (savePath) {
@@ -256,10 +273,19 @@ export default class AuthStore {
       }
     }
 
+    // If there is no auth token stored there is nothing else to do
+    if (!this.token) {
+      return;
+    }
+
+    // invalidate authentication token on server
+    client.post(`/auth.delete`);
+
     // remove authentication token itself
     removeCookie("accessToken", {
       path: "/",
     });
+
     // remove session record on apex cookie
     const team = this.team;
 
@@ -269,7 +295,12 @@ export default class AuthStore {
       setCookie("sessions", JSON.stringify(sessions), {
         domain: getCookieDomain(window.location.hostname),
       });
-      this.team = null;
     }
+
+    // clear all credentials from cache (and local storage via autorun)
+    this.user = null;
+    this.team = null;
+    this.policies = [];
+    this.token = null;
   };
 }

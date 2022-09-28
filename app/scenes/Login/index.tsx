@@ -19,6 +19,7 @@ import PageTitle from "~/components/PageTitle";
 import TeamLogo from "~/components/TeamLogo";
 import Text from "~/components/Text";
 import env from "~/env";
+import useLastVisitedPath from "~/hooks/useLastVisitedPath";
 import useQuery from "~/hooks/useQuery";
 import useStores from "~/hooks/useStores";
 import isCloudHosted from "~/utils/isCloudHosted";
@@ -49,7 +50,11 @@ function Header({ config }: { config?: Config | undefined }) {
   );
 }
 
-function Login() {
+type Props = {
+  children?: (config?: Config) => React.ReactNode;
+};
+
+function Login({ children }: Props) {
   const location = useLocation();
   const query = useQuery();
   const { t, i18n } = useTranslation();
@@ -58,6 +63,9 @@ function Login() {
   const [error, setError] = React.useState(null);
   const [emailLinkSentTo, setEmailLinkSentTo] = React.useState("");
   const isCreate = location.pathname === "/create";
+  const rememberLastPath = !!auth.user?.preferences?.rememberLastPath;
+  const [lastVisitedPath] = useLastVisitedPath();
+
   const handleReset = React.useCallback(() => {
     setEmailLinkSentTo("");
   }, []);
@@ -86,6 +94,14 @@ function Login() {
       setCookie("signupQueryParams", JSON.stringify(entries));
     }
   }, [query]);
+
+  if (
+    auth.authenticated &&
+    rememberLastPath &&
+    lastVisitedPath !== location.pathname
+  ) {
+    return <Redirect to={lastVisitedPath} />;
+  }
 
   if (auth.authenticated && auth.team?.defaultCollectionId) {
     return <Redirect to={`/collection/${auth.team?.defaultCollectionId}`} />;
@@ -174,11 +190,14 @@ function Login() {
             </GetStarted>
           </>
         ) : (
-          <StyledHeading centered>
-            {t("Login to {{ authProviderName }}", {
-              authProviderName: config.name || "Outline",
-            })}
-          </StyledHeading>
+          <>
+            <StyledHeading centered>
+              {t("Login to {{ authProviderName }}", {
+                authProviderName: config.name || "Outline",
+              })}
+            </StyledHeading>
+            {children?.(config)}
+          </>
         )}
         <Notices />
         {defaultProvider && (
@@ -236,7 +255,7 @@ const CheckEmailIcon = styled(EmailIcon)`
 
 const Background = styled(Fade)`
   width: 100vw;
-  height: 100vh;
+  height: 100%;
   background: ${(props) => props.theme.background};
   display: flex;
 `;

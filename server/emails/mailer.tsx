@@ -1,11 +1,11 @@
 import nodemailer, { Transporter } from "nodemailer";
 import Oy from "oy-vey";
-import * as React from "react";
 import env from "@server/env";
 import Logger from "@server/logging/Logger";
 import { APM } from "@server/logging/tracing";
 import { baseStyles } from "./templates/components/EmailLayout";
 
+const isCloudHosted = env.DEPLOYMENT === "hosted";
 const useTestEmailService =
   env.ENVIRONMENT === "development" && !env.SMTP_USERNAME;
 
@@ -15,7 +15,7 @@ type SendMailOptions = {
   subject: string;
   previewText?: string;
   text: string;
-  component: React.ReactNode;
+  component: JSX.Element;
   headCSS?: string;
 };
 
@@ -44,6 +44,7 @@ export class Mailer {
             "email",
             "Couldn't generate a test account with ethereal.email at this time – emails will not be sent."
           );
+          return;
         }
 
         this.transporter = nodemailer.createTransport(options);
@@ -65,7 +66,7 @@ export class Mailer {
     const html = Oy.renderTemplate(data.component, {
       title: data.subject,
       headCSS: [baseStyles, data.headCSS].join(" "),
-      previewText: data.previewText,
+      previewText: data.previewText ?? "",
     });
 
     try {
@@ -77,6 +78,15 @@ export class Mailer {
         subject: data.subject,
         html,
         text: data.text,
+        attachments: isCloudHosted
+          ? undefined
+          : [
+              {
+                filename: "header-logo.png",
+                path: process.cwd() + "/public/email/header-logo.png",
+                cid: "header-image",
+              },
+            ],
       });
 
       if (useTestEmailService) {
@@ -102,11 +112,15 @@ export class Mailer {
             pass: env.SMTP_PASSWORD,
           }
         : undefined,
-      tls: env.SMTP_TLS_CIPHERS
-        ? {
-            ciphers: env.SMTP_TLS_CIPHERS,
-          }
-        : undefined,
+      tls: env.SMTP_SECURE
+        ? env.SMTP_TLS_CIPHERS
+          ? {
+              ciphers: env.SMTP_TLS_CIPHERS,
+            }
+          : undefined
+        : {
+            rejectUnauthorized: false,
+          },
     };
   }
 
